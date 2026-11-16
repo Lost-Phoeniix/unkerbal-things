@@ -1,0 +1,1114 @@
+// KK worm swarm (Unkerbal Things, Moho creature body). Position-based worms on the GPU, in WORLD space.
+//
+// Each worm is a chain of PPW points (index 0 = head). Nothing ever moves a worm as a whole: the only things that move
+// it are (1) gravity, (2) its own muscles, which conserve its centre of mass, and (3) friction against the ground and other
+// worms. Friction is anisotropic (sliding forward along the body is easy; backward or sideways is hard), so muscle waves
+// turn into crawling. That is the whole locomotion model; the head only chooses where to bend.
+//
+// Per substep: Integrate -> ClearGrid -> BuildGrid -> (Collide -> ApplyDelta -> ChainSolve) x2 -> Finish.
+// Once per rendered step: CopyRender before the substeps, Frames after them.
+
+#pragma kernel CopyRender
+#pragma kernel Integrate
+#pragma kernel ClearGrid
+#pragma kernel BuildGrid
+#pragma kernel Collide
+#pragma kernel ApplyDelta
+#pragma kernel ChainSolve
+#pragma kernel Finish
+#pragma kernel Frames
+#pragma kernel FieldClear
+#pragma kernel FieldSplat
+#pragma kernel StateUpdate
+#pragma kernel Rebase
+
+#define PPW 16
+#define K 12
+
+RWStructuredBuffer<float4> _Pos;        // xyz, w = collision radius
+RWStructuredBuffer<float4> _Prev;       // position at the start of the substep (Verlet)
+RWStructuredBuffer<float4> _Delta;      // collision correction, w = contact count
+RWStructuredBuffer<float4> _Contact;    // x grounded, y worm contacts, z upward support, w unused
+RWStructuredBuffer<float4> _RenderPrev; // positions of the previous rendered step (render interpolation)
+RWStructuredBuffer<float4> _Frame;      // per point: tube normal (parallel transport)
+RWStructuredBuffer<float4> _Worm;       // per worm: x wave phase, y wander angle, z activity, w unused
+StructuredBuffer<float4> _WormInfo;     // per worm: x radius, y rest spacing, z stiffness mul, w tint (read only: KSP's D3D11 allows 8 writable buffers per kernel)
+RWStructuredBuffer<uint> _CellCount;
+RWStructuredBuffer<uint> _CellItems;
+RWStructuredBuffer<uint> _Density;       // P2: points per field cell
+RWStructuredBuffer<int> _Trail;         // P2: per field cell: trail direction x, z and amount (fixed point, x256)
+
+uint _PointCount, _WormCount, _TableMask, _Step, _Advance;
+int _Iter;
+float _Dt, _Gravity, _CellSize, _Drag, _MaxDisp;
+float4 _Goal;                 // xyz goal, w = rest radius of the heap around it
+float _Attract, _Wander, _WanderTurn, _SteerRate, _Climb, _Thrust;
+float _WaveAmp, _WaveK, _WaveW, _PeriAmp, _PeriK, _BendK;
+float _MuFwd, _MuBack, _MuLat, _MuWorm, _Adhesion, _Relax, _Activity, _Stick, _HeadGrip;
+float _SpurtShare, _SpurtLen, _SpurtFast, _SpurtSlow;   // random bursts (0 share = off; an unset uniform is 0, so the offline rig stays off)
+float _GroundAmp;
+uint _HFMode, _HFN;
+uint _FinishClamp;            // 1: Finish puts points back on the ground after the last collision pass
+uint _TunnelOn;               // 1: worms burrow head first along a dig path (0: the old straight-down dive / upright rise)
+float _SubT;                  // time of this substep inside the current step (s)
+float _GridReach;             // m from the creature beyond which the terrain grid knows no ground (0 = no limit)
+// the serpent (travelling body), read only: no writable-buffer cost
+StructuredBuffer<float4> _PathP;     // head path, [0] = head now
+StructuredBuffer<float4> _PathN;     // normal per path sample
+uint _PathCount, _SerpentOn, _SerpentRelease, _SerpentBudget;
+float _PathD0, _PathDs, _SerpentLen, _SerpentR, _SerpentTwist, _SerpentSpin, _SerpentHold, _SerpentShare;
+float _HFCell;
+StructuredBuffer<float> _Height;     // terrain height grid (game only; read only)
+float4x4 _Rebase;                    // moves every point into a new local frame (the frame follows the creature in big steps)
+uint _FieldN;
+float _FieldCell, _TrailDecay, _Time;
+float _Crowd, _DensityRef, _Follow, _TrailRef, _Swirl, _SwirlScale, _Restless, _Urgency, _Orbit, _SteerIn;
+float4 _Reach;                // xyz target the heap reaches for, w = share of worms that lead (0 = off)
+
+// ------------------------------------------------------------------ P3: burrowing and the attack
+// Worm states. Visible worms are only ever moved by physics; only UNDERGROUND worms (unseen) travel with the creature.
+#define S_SURFACE 0u   // normal: ground below them is solid
+#define S_DIVE 1u      // head goes down into the soil; the soil grips like the ground (friction), no ground clamp
+#define S_UNDER 2u     // hidden, parked under the creature, not simulated, not drawn
+#define S_LEAP 3u      // thrown out of the ground ahead of a fast creature, arcs through the air and dives back in
+#define S_SPIRE 4u     // part of the eruption spire, guided up the column under the craft
+#define S_RISE 5u      // coming up out of the soil (or falling after the spire): the ground is one-way, it stops them only from above
+#define S_SERPENT 6u   // part of the travelling body: guided to its slot along the head's path (twisting, waving through the ground)
+RWStructuredBuffer<uint> _State;
+RWStructuredBuffer<uint> _Counters;    // 0 leaps spawned, 1 rises spawned, 2 spire worms spawned (this step)
+RWStructuredBuffer<float4> _Leap;      // per worm: the current leap arc (entry relative to the creature xz, direction angle)
+float4 _Anchor;                // creature ground point (xyz), w = its speed
+float4 _AnchorVel;             // xyz velocity of the creature
+float4 _Fwd;                   // xz travel direction
+uint _DiveMode;                // 0 none, 1 worms falling behind dive, 2 everyone dives, 3 everyone dives at once and fast (a quick strike)
+float _DiveDist;               // mode 1: worms farther than this from the anchor dive
+uint _LeapBudget, _RiseBudget, _SpireBudget, _SpireRelease;
+float _SpawnP;                 // chance per step that an underground worm takes a free spawn slot
+float4 _Spire;                 // base ground point (xyz), w = current tip height
+float4 _SpireCraft;            // craft position (xyz), w = coil (0..1): the tip wraps around the craft
+float _SpireR, _SpireT, _MaxDispFast, _LeapUp, _StepDt;
+float4 _Ball;                  // after the grab: ball centre (xyz), w = how far the spire has turned into the ball (0..1)
+float _BallR, _Burst;          // ball radius; outward speed the ball bursts with when it hits the ground
+float _SpireHold;               // 1: the spire/ball guide pulls fully; fading to 0 hands the worms over to plain physics (the pile)
+float4 _Irreg;                  // x: spire irregularity, y: ball irregularity, z: grab chaos (0 = the old regular shapes)
+float4 _Mound;                  // x: 1 = the ball is a collapse (a lumpy low mound over the craft, worms tangled), y: height / radius,
+                                // z: the squash: the column is this much wider while it is pressed down (1 = not squashed),
+                                // w: the unsquashed height while squashing (0 = not squashing): the twist keeps it
+float _BlastR;                  // > 0: the burst is a blast from _Ball.xyz, strongest at the centre, fading out to this radius
+float _BlastT0;                 // _SpireT when the blast went off (the staged release, outside in)
+float _ReleaseU;                // the collapse: spire worms with a height share below this are handed over to plain physics
+float4 _SpireLean;              // xz: how far the spire's top leans over (local), the column bends smoothly from base to tip
+
+// ------------------------------------------------------------------ helpers
+// Ground: in the game a terrain height grid around the swarm (local frame, wrapping, filled by the CPU from the terrain),
+// offline an analytic test ground.
+float HF(int2 c) { uint m = _HFN - 1; return _Height[((uint)c.x & m) + _HFN * ((uint)c.y & m)]; }
+float GroundH(float2 q)
+{
+	if (_HFMode != 0)
+	{
+		float2 g = q / _HFCell - 0.5;
+		int2 c = (int2)floor(g);
+		float2 f = g - c;
+		return lerp(lerp(HF(c), HF(c + int2(1, 0)), f.x), lerp(HF(c + int2(0, 1)), HF(c + int2(1, 1)), f.x), f.y);
+	}
+	return _GroundAmp * (0.5 * sin(q.x * 0.7) * cos(q.y * 0.6) + 0.18 * sin(q.x * 1.9 + 1.0) * sin(q.y * 2.3)
+		+ 0.06 * sin(q.x * 5.1) * sin(q.y * 4.7 + 2.0));
+}
+float3 GroundN(float2 q)
+{
+	const float e = 0.05;
+	float h = GroundH(q);
+	return normalize(float3(h - GroundH(q + float2(e, 0)), e, h - GroundH(q + float2(0, e))));
+}
+int3 CellOf(float3 p) { return (int3)floor(p / _CellSize); }
+uint HashCell(int3 c) { return ((uint)(c.x * 92837111) ^ (uint)(c.y * 689287499) ^ (uint)(c.z * 283923481)) & _TableMask; }
+float Rand(uint n)
+{
+	n = (n << 13u) ^ n;
+	n = n * (n * n * 15731u + 789221u) + 1376312589u;
+	return float(n & 0x7fffffffu) / 2147483647.0;
+}
+float3 RotY(float3 v, float a)
+{
+	float c = cos(a), s = sin(a);
+	return float3(v.x * c + v.z * s, v.y, -v.x * s + v.z * c);
+}
+float3 SafeNorm(float3 v, float3 fb) { float l = length(v); return l > 1e-6 ? v / l : fb; }
+
+// ------------------------------------------------------------------ per point
+[numthreads(256, 1, 1)]
+void CopyRender(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x >= _PointCount) return;
+	_RenderPrev[id.x] = _Pos[id.x];
+}
+
+[numthreads(256, 1, 1)]
+void Integrate(uint3 id : SV_DispatchThreadID)
+{
+	uint i = id.x;
+	if (i >= _PointCount) return;
+	uint stt = _State[i / PPW];
+	if (stt == S_UNDER) return;
+	float4 p = _Pos[i];
+	float4 pr = _Prev[i];
+	// a worm flung by the kill blast flies free (vacuum: no drag, the fast cap) until it is back near the ground
+	bool flung = pr.w > 0.5 && (p.y > GroundH(p.xz) + p.w * 3.0 || p.y > pr.y);   // still rising, or not yet down
+	float3 v = (p.xyz - pr.xyz) * ((stt == S_LEAP || stt == S_SPIRE || stt == S_SERPENT || flung) ? 1.0 : _Drag);
+	v.y -= _Gravity * _Dt * _Dt;
+	float l = length(v);
+	float cap = (stt == S_LEAP || stt == S_SPIRE || stt == S_RISE || stt == S_SERPENT) ? _MaxDispFast : _MaxDisp;
+	if (flung) cap = min(_MaxDispFast, (_Burst * 1.1 + 1.0) * _Dt);   // a flung worm never flies faster than the blast threw it (no pile push-out kicks)
+	if (l > cap) v *= cap / l;
+	_Prev[i] = float4(p.xyz, flung ? 1 : 0);
+	p.xyz += v;
+	_Pos[i] = p;
+}
+
+[numthreads(256, 1, 1)]
+void ClearGrid(uint3 id : SV_DispatchThreadID)
+{
+	if (id.x > _TableMask) return;
+	_CellCount[id.x] = 0;
+}
+
+[numthreads(256, 1, 1)]
+void BuildGrid(uint3 id : SV_DispatchThreadID)
+{
+	uint i = id.x;
+	if (i >= _PointCount) return;
+	if (_State[i / PPW] == S_UNDER) return;
+	// buried points (burrowing worms) do not push the worms above them
+	float4 pb = _Pos[i];
+	if (_TunnelOn != 0 && pb.y + pb.w < GroundH(pb.xz)) return;
+	uint h = HashCell(CellOf(_Pos[i].xyz));
+	uint slot;
+	InterlockedAdd(_CellCount[h], 1u, slot);
+	if (slot < K) _CellItems[h * K + slot] = i;
+}
+
+// Jacobi: every point gathers the push-out from its neighbours; neighbours on its own worm within 2 links are skipped.
+// Just outside contact a weak pull (wet adhesion) holds bodies together.
+[numthreads(256, 1, 1)]
+void Collide(uint3 id : SV_DispatchThreadID)
+{
+	uint i = id.x;
+	if (i >= _PointCount) return;
+	if (_State[i / PPW] == S_UNDER) { _Delta[i] = 0; return; }
+	float4 pi = _Pos[i];
+	bool flungI = _Prev[i].w > 0.5;   // flung by the kill blast: in flight the worms pass through each other (else the fast inner
+	                                   // worms run into the slower outer ones and lose their speed: a clump stayed in the middle)
+	uint wi = i / PPW;
+	int si = (int)(i % PPW);
+	int3 c = CellOf(pi.xyz);
+	float3 d = 0;
+	float n = 0, sup = 0;
+	for (int dz = -1; dz <= 1; dz++)
+	for (int dy = -1; dy <= 1; dy++)
+	for (int dx = -1; dx <= 1; dx++)
+	{
+		uint h = HashCell(c + int3(dx, dy, dz));
+		uint cnt = min(_CellCount[h], (uint)K);
+		for (uint k = 0; k < cnt; k++)
+		{
+			uint j = _CellItems[h * K + k];
+			if (j == i) continue;
+			if (j / PPW == wi && abs((int)(j % PPW) - si) <= 2) continue;
+			if (flungI || _Prev[j].w > 0.5) continue;
+			float4 pj = _Pos[j];
+			float3 dd = pi.xyz - pj.xyz;
+			float d2 = dot(dd, dd);
+			float rs = pi.w + pj.w;
+			if (d2 < rs * rs * 1.44 && d2 > 1e-10)
+			{
+				float dist = sqrt(d2);
+				float3 nn = dd / dist;
+				if (dist < rs) { d += nn * (rs - dist) * 0.5; n += 1; sup += saturate(nn.y); }
+				else d -= nn * (dist - rs) * _Adhesion;
+			}
+		}
+	}
+	_Delta[i] = float4(d, n);
+	float4 cc = _Contact[i];
+	cc.y = n; cc.z = sup;
+	_Contact[i] = cc;
+}
+
+[numthreads(256, 1, 1)]
+void ApplyDelta(uint3 id : SV_DispatchThreadID)
+{
+	uint i = id.x;
+	if (i >= _PointCount) return;
+	float4 p = _Pos[i];
+	float3 c = _Delta[i].xyz * _Relax;
+	float l = length(c), lim = p.w * 0.6;
+	if (l > lim) c *= lim / l;
+	p.xyz += c;
+	_Pos[i] = p;
+}
+
+// Anisotropic friction as a position constraint, relative to where the point was at the start of the substep:
+// forward along the body slides, backward and sideways grip. Run inside the solver loop, so the muscles can only reach
+// their shape by sliding the body along itself (that is what crawling is).
+// ------------------------------------------------------------------ P2: shared fields (2D, world-anchored, wrapping)
+// Density: points per cell. Trail: heads lay down their crawl direction (fixed point), it fades every step.
+// Heads read both: they spill away from crowding and follow the trails of those ahead (streams, tendrils).
+uint FieldIndex(float2 xz)
+{
+	int2 c = (int2)floor(xz / _FieldCell);
+	uint m = _FieldN - 1;
+	return ((uint)c.x & m) + _FieldN * ((uint)c.y & m);
+}
+float Dens(float2 xz) { return (float)_Density[FieldIndex(xz)]; }
+
+[numthreads(256, 1, 1)]
+void FieldClear(uint3 id : SV_DispatchThreadID)
+{
+	uint i = id.x;
+	if (i >= _FieldN * _FieldN) return;
+	_Density[i] = 0;
+	[unroll] for (int k = 0; k < 3; k++) _Trail[i * 3 + k] = (int)((float)_Trail[i * 3 + k] * _TrailDecay);
+}
+
+[numthreads(256, 1, 1)]
+void FieldSplat(uint3 id : SV_DispatchThreadID)
+{
+	uint i = id.x;
+	if (i >= _PointCount) return;
+	if (_State[i / PPW] == S_UNDER) return;
+	float3 p = _Pos[i].xyz;
+	uint c = FieldIndex(p.xz);
+	InterlockedAdd(_Density[c], 1u);
+	if (i % PPW == 0)
+	{
+		float4 cc = _Contact[i];
+		if (cc.x > 0.5 || cc.z > 0.2)
+		{
+			float2 d = p.xz - _Pos[i + 1].xz;
+			float l = length(d);
+			if (l > 1e-5)
+			{
+				d /= l;
+				InterlockedAdd(_Trail[c * 3 + 0], (int)(d.x * 256.0));
+				InterlockedAdd(_Trail[c * 3 + 1], (int)(d.y * 256.0));
+				InterlockedAdd(_Trail[c * 3 + 2], 256);
+			}
+		}
+	}
+}
+
+// 2D curl of a few drifting sine waves: a divergence-free swirl, so neighbours form eddies instead of random noise
+float2 Swirl(float2 q, float t)
+{
+	q *= _SwirlScale;
+	float2 v = 0;
+	v += float2(cos(q.y * 1.3 + t * 0.21), -cos(q.x * 1.1 - t * 0.17)) * 1.0;
+	v += float2(cos(q.y * 2.7 + q.x * 0.6 - t * 0.31) * 2.7, -cos(q.x * 2.3 - q.y * 0.5 + t * 0.27) * 2.3) * 0.25;
+	v += float2(cos(q.x * 0.9 + q.y * 4.1 + t * 0.4) * 4.1, -cos(q.x * 0.9 + q.y * 4.1 + t * 0.4) * 0.9) * 0.08;
+	return v;
+}
+
+// the head searches: it grips much less than the body, so it can sweep sideways and lay down the path the body follows
+float HeadGrip(int s) { return s == 0 ? _HeadGrip : (s == 1 ? lerp(_HeadGrip, 1.0, 0.5) : 1.0); }
+float3 Friction(float3 pc, float3 pv, float3 t, float r, float sup, float scale, out float grounded)
+{
+	float gh = GroundH(pc.xz);
+	grounded = pc.y - gh - r < 0.002 + _Stick * r ? 1.0 : 0.0;
+	float mu = grounded > 0.5 ? 1.0 : saturate(sup * 1.5) * _MuWorm;
+	mu *= scale;
+	if (mu <= 0) return pc;
+	float3 d = pc - pv;
+	float3 nrm = grounded > 0.5 ? GroundN(pc.xz) : float3(0, 1, 0);
+	float3 dn = dot(d, nrm) * nrm, dtg = d - dn;
+	float3 tp = t - dot(t, nrm) * nrm;
+	float tl = length(tp);
+	tp = tl > 1e-5 ? tp / tl : float3(0, 0, 0);
+	float al = dot(dtg, tp);
+	float3 lat = dtg - al * tp;
+	float keepA = al > 0 ? 1.0 - _MuFwd * mu : 1.0 - _MuBack * mu;
+	return pv + dn + tp * al * keepA + lat * (1.0 - _MuLat * mu);
+}
+
+// Where point s of a spire worm belongs: each worm has its own height share u, angle and radius in a column that rises from
+// the base under the craft. The column twists, whips more toward its tip, tapers, and at the top coils around the craft.
+float3 SpireTarget(uint w, int s, float sp)
+{
+	float u = Rand(w * 11u + 1u), phi = Rand(w * 11u + 2u) * 6.2831853, rho = sqrt(Rand(w * 11u + 3u)) * _SpireR;
+	float H = max(_Spire.w, 0.1);
+	float ys = u * H + 0.3 - s * sp * 0.95;
+	float frac = saturate(ys / H);
+	float loose = Rand(w * 11u + 5u) < 0.2 ? 1.8 : 1.0;   // a fringe of worms flails farther out
+	float rad = (rho * (1.0 - 0.85 * frac) + 0.12) * loose * max(_Mound.z, 1.0);   // wider while squashed (the same mass, shorter)
+	float Ht = max(H, _Mound.w);   // the twist keeps the unsquashed height (else a squashing column spins every worm round it)
+	float ang = phi + (u * Ht + 0.3 - s * sp * 0.95) * 0.7 + _SpireT * 1.5;
+	float3 c = _Spire.xyz + float3(0, ys, 0);
+	// sway: the old two slow sines, but with wandering phases and a swelling and ebbing amplitude at incommensurate rates
+	float ir = _Irreg.x;
+	float pw1 = ir * 0.9 * sin(_SpireT * 0.63 + 0.7), pw2 = ir * 0.8 * sin(_SpireT * 0.47 + 2.1 + ys * 0.05);
+	float swayAmp = 1.0 + ir * (0.2 * sin(_SpireT * 1.13 + ys * 0.11) + 0.12 * sin(_SpireT * 2.71 + 1.9) - 0.1);
+	c += float3(sin(_SpireT * 3.1 + ys * 0.35 + pw1), 0, cos(_SpireT * 2.3 + ys * 0.4 + pw2)) * (0.15 * H * swayAmp) * pow(frac, 1.5);
+	c += float3(_SpireLean.x, 0, _SpireLean.z) * (frac * frac);   // a smooth lean, not a stretch
+	float coil = _SpireCraft.w * smoothstep(0.7, 1.0, frac);
+	c = lerp(c, _SpireCraft.xyz + float3(0, (frac - 0.85) * 4.0, 0), coil);
+	rad = lerp(rad, _SpireR * 1.15, coil);
+	float3 spire = c + rad * float3(cos(ang), 0, sin(ang));
+	float cz = _Irreg.z;
+	// chaos: the twist is a fixed shape, it does not spin (worms pressing on the ground at the foot cannot turn round it). Only
+	// the upper part writhes: a slow back-and-forth twist that grows with the height share (zero at the foot)
+	float torsion = u * u * (0.6 * sin(_SpireT * 0.8 + 1.3) + 0.3 * sin(_SpireT * 1.9 + 0.4));
+	float angC = phi + (u * Ht + 0.3) * 0.7 + torsion;   // this worm's angle round the column (the mound keeps it)
+	float3 bdC = float3(0, -1, 0);
+	if (cz > 0)
+	{
+		// grab chaos: the worm keeps its slot only at its head; its body runs down the column slanted its own way around the
+		// twist, writhing with its own travelling wave; some worms lash around the column's surface
+		float ys0 = u * H + 0.3, f0 = saturate(ys0 / H);
+		float ang0 = angC;
+		// a ragged crown: near the top the column's edge rises and falls round it and over time (never a flat top)
+		float topF = smoothstep(0.55, 1.0, f0);
+		float crown = 1.0 + topF * (0.05 * sin(ang0 * 2.0 + _SpireT * 0.6) + 0.03 * sin(ang0 * 3.0 - _SpireT * 0.9 + 1.1) + 0.04 * (Rand(w * 23u + 16u) - 0.5));   // small, slow
+		float3 c0 = _Spire.xyz + float3(0, ys0 * crown, 0);
+		c0 += float3(sin(_SpireT * 3.1 + ys0 * 0.35 + pw1), 0, cos(_SpireT * 2.3 + ys0 * 0.4 + pw2)) * (0.15 * H * swayAmp) * pow(f0, 1.5);
+		c0 += float3(_SpireLean.x, 0, _SpireLean.z) * (f0 * f0);
+		float coil0 = _SpireCraft.w * smoothstep(0.7, 1.0, f0);
+		// the top knots round the craft over ~3 m of height (not a flat disk); the column has a flared foot, a slim top and
+		// slow bulges travelling up it (it squeezes itself up), so it is never a straight-sided tower
+		c0 = lerp(c0, _SpireCraft.xyz + float3(0, (f0 - 0.85) * 10.0, 0), coil0);
+		float prof = 0.45 + 1.0 * (1.0 - f0) * (1.0 - f0);
+		float bulge = 1.0 + 0.32 * sin(ys0 * 0.42 - _SpireT * 2.3 + 1.7) + 0.18 * sin(ys0 * 0.9 + ang0 * 2.0 - _SpireT * 1.3);
+		float rad0 = lerp((rho * prof * bulge + 0.12) * loose * max(_Mound.z, 1.0), _SpireR * 0.55, coil0);
+		// a tentacle tip: the column narrows smoothly over its top 30% to a point (or round the craft it holds)
+		rad0 *= lerp(1.0, 0.1 + 0.9 * sqrt(saturate(1.0 - ((f0 - 0.7) / 0.3) * ((f0 - 0.7) / 0.3))), step(0.7, f0));
+		float3 out0 = float3(cos(ang0), 0, sin(ang0));
+		float3 head = c0 + rad0 * out0;
+		float3 tan0 = float3(-sin(ang0), 0, cos(ang0));   // around the column (the way it twists)
+		bool dancer = Rand(w * 23u + 1u) < 0.12;
+		if (dancer)
+		{
+			// lashing along the column's surface (sweeping around it, a little out), never straight out like a spike
+			float lash = lerp(0.7, 1.5, Rand(w * 23u + 2u)) * sin(_SpireT * (0.7 + 0.6 * Rand(w * 23u + 3u)) + Rand(w * 23u + 4u) * 6.28);
+			head += tan0 * lash + out0 * abs(lash) * 0.35 + float3(0, 0.6 * sin(_SpireT * 1.1 + (float)w), 0);
+		}
+		// the body runs down the column from its head, slanted around the twist by 30-60 degrees (mostly sideways, never out):
+		// the worms wrap and cross each other like vines instead of bristling out (a hedgehog)
+		float tilt = lerp(0.5, 1.05, Rand(w * 23u + 6u));
+		float az = (Rand(w * 23u + 7u) - 0.5) * 6.2831853 + 0.5 * sin(_SpireT * (0.3 + 0.5 * Rand(w * 23u + 8u)) + (float)w);
+		float hang = -1.0;
+		tilt *= lerp(1.0, 0.3, smoothstep(0.7, 1.0, u));   // toward the tip the bodies follow the axis (heads leading up), streamlined
+		float3 bd = normalize(float3(0, hang * cos(tilt), 0) + (tan0 * cos(az) + out0 * 0.25 * sin(az)) * sin(tilt));
+		// squashed (a short column): the bodies lie down round it instead of poking into the soil
+		bd = normalize(float3(bd.x, bd.y * lerp(0.15, 1.0, saturate((H - 3.0) / 10.0)), bd.z) + 1e-4);
+		bdC = bd;
+		float3 p1 = normalize(cross(bd, abs(bd.y) > 0.9 ? float3(1, 0, 0) : float3(0, 1, 0)));
+		float3 p2 = cross(bd, p1);
+		float st = s / (PPW - 1.0);
+		float amp = lerp(0.2, 0.8, Rand(w * 23u + 10u)) * (0.65 + 0.35 * sin(_SpireT * (0.5 + 0.7 * Rand(w * 23u + 11u)) + (float)w * 0.37));
+		float wk = lerp(0.35, 0.9, Rand(w * 23u + 12u)), ww = lerp(4.0, 9.0, Rand(w * 23u + 13u)), wph = Rand(w * 23u + 14u) * 6.28;
+		float3 wr = p1 * sin(wk * s - ww * _SpireT + wph) + p2 * 0.6 * cos(wk * 0.7 * s - ww * 1.3 * _SpireT + wph * 1.7);
+		float3 chaos = head + bd * (s * sp) + wr * amp * sqrt(st);
+		spire = lerp(spire, chaos, cz);
+	}
+	if (_Ball.w <= 0) return spire;
+	if (_Mound.x > 0.5)
+	{
+		// the collapse: a lumpy low mound poured over the craft. Each worm has its own spot inside it (more toward the rim and
+		// the top, like a pile) and its own slowly turning direction, so the bodies lie tangled, crossing every way, writhing.
+		float3 dm = normalize(float3(Rand(w * 31u + 1u) * 2 - 1, Rand(w * 31u + 2u), Rand(w * 31u + 3u) * 2 - 1) + 1e-4);
+		float rr = _BallR * pow(Rand(w * 31u + 4u), 0.4);
+		float a1 = Rand(w * 31u + 5u) * 6.2831853 + _SpireT * (Rand(w * 31u + 6u) - 0.5) * 1.2;
+		float e1 = (Rand(w * 31u + 7u) - 0.5) * 1.4 + 0.3 * sin(_SpireT * 0.9 + (float)w);
+		float3 bd2 = float3(cos(a1) * cos(e1), sin(e1), sin(a1) * cos(e1));
+		if (cz > 0)
+		{
+			// the squash ends in the mound: each worm keeps its place (its angle round the column, inner worms inside, high
+			// worms on top) and the way its body lay, so the blend is a few metres for everyone, never a jump across the pile
+			float ra = saturate(rho / max(_SpireR, 1e-3));
+			rr = _BallR * lerp(0.15, 1.0, ra);
+			dm = float3(cos(angC), _Mound.y * saturate(1.0 - ra * ra * 0.8) * lerp(0.35, 1.0, u), sin(angC));
+			bd2 = normalize(float3(bdC.x, bdC.y * 0.3, bdC.z) + 1e-4);
+		}
+		float3 q = dm + float3(0.3 * sin(_SpireT * 0.41 + 1.0), 0, 0.3 * sin(_SpireT * 0.37 + 4.1));
+		float lump = 0.22 * sin(dot(q, float3(1.7, 0.6, -1.1)) * 2.0 + _SpireT * 0.71) + 0.15 * sin(dot(q, float3(-0.8, 1.9, 1.2)) * 2.3 - _SpireT * 0.57 + 1.3);
+		float3 mc = _Ball.xyz + float3(dm.x * rr, cz > 0 ? dm.y * _BallR : dm.y * _Mound.y * rr, dm.z * rr) * (1.0 + lump);   // chaos: the height does not shrink with the radius (the middle is the top)
+		float3 n1 = normalize(cross(bd2, float3(0, 1, 0)) + 1e-4), n2 = cross(bd2, n1);
+		float wph2 = Rand(w * 31u + 8u) * 6.28;
+		float3 wr2 = (n1 * sin(0.7 * s - 6.0 * _SpireT + wph2) + n2 * 0.7 * cos(0.5 * s - 7.5 * _SpireT + wph2)) * 0.45;
+		float3 mp = mc + bd2 * ((s - (PPW - 1) * 0.5) * sp) + wr2;
+		mp.y = max(mp.y, GroundH(mp.xz) + 0.25);   // never a target in the soil (rising worms are not stopped by it)
+		return lerp(spire, mp, _Ball.w);
+	}
+	// the ball: every worm lies on its own shell around the craft and crawls around it along its own great circle
+	float3 d0 = normalize(float3(Rand(w * 17u + 1u) * 2 - 1, Rand(w * 17u + 2u) * 2 - 1, Rand(w * 17u + 3u) * 2 - 1) + 1e-4);
+	float3 ax = normalize(cross(d0, normalize(float3(Rand(w * 17u + 4u) - 0.5, 1.0, Rand(w * 17u + 5u) - 0.5))) + 1e-4);
+	float rw = _BallR * (0.5 + 0.5 * Rand(w * 17u + 6u));
+	float an = _SpireT * (0.6 + 0.6 * Rand(w * 17u + 7u)) * (Rand(w * 17u + 8u) < 0.5 ? -1.0 : 1.0) - s * sp / rw;
+	an += _Irreg.y * (0.8 * sin(dot(d0, float3(1.3, -0.9, 1.1)) * 1.5 + _SpireT * 0.8) + 0.4 * sin(_SpireT * 1.7 + Rand(w * 17u + 9u) * 6.28));   // uneven churn: faster here, slower there
+	float3 dr = d0 * cos(an) + cross(ax, d0) * sin(an) + ax * dot(ax, d0) * (1.0 - cos(an));
+	float3 bp = _Ball.xyz + dr * rw;
+	if (_Irreg.y > 0)
+	{
+		// lumpy, never spiky: slow, wide deformation (a few lumps over the whole sphere, amplitude at most 34%), uneven churn
+		// (above), and a slowly shifting asymmetric bulge. Every term is a low frequency of the direction: nothing pokes out thin.
+		float bi = _Irreg.y;
+		float3 q = dr + float3(0.31 * sin(_SpireT * 0.41 + 1.0), 0.27 * sin(_SpireT * 0.53 + 2.4), 0.29 * sin(_SpireT * 0.37 + 4.1));
+		float lump = 0.14 * sin(dot(q, float3(1.7, 0.6, -1.1)) + _SpireT * 0.71) + 0.11 * sin(dot(q, float3(-0.8, 1.9, 1.2)) - _SpireT * 0.57 + 1.3) + 0.09 * sin(dot(q, float3(0.5, -1.2, 2.0)) + _SpireT * 0.93 + 2.2);
+		float3 sq = float3(1.0 + 0.2 * sin(_SpireT * 0.49), 1.0 + 0.2 * sin(_SpireT * 0.34 + 1.1), 1.0 + 0.2 * sin(_SpireT * 0.61 + 2.3));
+		float3 bulge = float3(sin(_SpireT * 0.29 + 0.4), 0.5 * sin(_SpireT * 0.43 + 1.7), sin(_SpireT * 0.37 + 3.0)) * (0.18 * _BallR);
+		bp = _Ball.xyz + (dr * sq) * rw * (1.0 + bi * lump) + bulge * bi;
+	}
+	return lerp(spire, bp, _Ball.w);
+}
+
+// A leaping worm swims like a dolphin: its whole body follows one arc that travels with the creature. The arc starts
+// under the ground, rises through the surface, peaks and goes back in; every point of the body sits at its own place on it
+// (head first, the tail following through the same entry and exit holes), with a slight swimming wiggle.
+// _Leap[w]: xy entry point (local xz, fixed in the ground), z direction angle, w = forward drift speed + seed.
+void LeapPose(uint w, uint base)
+{
+	float4 st = _Worm[w];
+	float4 lp = _Leap[w];
+	float sp = _WormInfo[w].y;
+	// every leap is its own: shape, timing and wiggle come from the leap's seed, not the worm
+	float carry = floor(lp.w);
+	uint sd = (uint)(frac(lp.w) * 1000000.0) + w * 13u;
+	float H = 1.5 + 4.0 * Rand(sd + 1u);                // peak height (m)
+	float Lh = 10.0 + 16.0 * Rand(sd + 2u);             // arc length along the ground (m)
+	float T = 0.8 + 0.9 * Rand(sd + 3u);                // seconds for the arc
+	float wig = 0.1 + 0.45 * Rand(sd + 4u), wk = 0.4 + 0.8 * Rand(sd + 5u);
+	float bodyU = sp * (PPW - 1) / Lh;
+	float uh = -0.08 + st.w / T * (1.16 + bodyU);
+	float2 d = float2(cos(lp.z), sin(lp.z)), side = float2(-d.y, d.x);
+	float2 e = lp.xy + _Fwd.xz * (carry * st.w);       // the entry point drifts forward, slower than the creature
+	[unroll] for (int s = 0; s < PPW; s++)
+	{
+		float u = uh - s * sp / Lh;
+		float2 xz = e + d * (u * Lh) + side * (wig * sin(st.x - s * wk));
+		float3 q = float3(xz.x, GroundH(xz) + H * 4.0 * u * (1.0 - u), xz.y);
+		_Pos[base + s].xyz = q;
+		_Prev[base + s].xyz = q;
+	}
+	if (_Advance != 0) { st.x += (6.0 + 6.0 * Rand(sd + 6u)) * _Dt; _Worm[w] = st; }
+}
+
+// ------------------------------------------------------------------ burrowing: head first, the body dragged in behind it
+// A digging (S_DIVE) or rising (S_RISE) worm follows one path: from its entry point a short way along the ground, then an arc
+// down (radius TUN_R) until it points TUN_ANG below the horizon, then a straight shaft. u = distance along that path.
+// Points on the path (u >= 0) are placed on it; the rest of the body is free and only dragged by its links, so it is pulled
+// along the ground and over the rim, bending ~90 degrees there, never standing up. Rising is the same path run backwards.
+// _Leap[w] for these states: xy entry point (local xz), z heading into the ground (angle), w dig speed m/s (0 = no path:
+// the old behaviour, e.g. spire worms handed to the pile partly in the soil).
+#define TUN_LEAD 0.4
+#define TUN_R 1.2
+#define TUN_ANG 1.2217
+float TunnelArcEnd() { return TUN_LEAD + TUN_R * TUN_ANG; }
+float3 TunnelPos(float4 lp, float r, float u)
+{
+	float2 d = float2(cos(lp.z), sin(lp.z));
+	if (u <= TUN_LEAD) { float2 q = lp.xy + d * max(u, 0.0); return float3(q.x, GroundH(q) + r, q.y); }
+	float2 e = lp.xy + d * TUN_LEAD;
+	float y0 = GroundH(e) + r;
+	float a = (u - TUN_LEAD) / TUN_R, h, v;
+	if (a <= TUN_ANG) { h = TUN_R * sin(a); v = -TUN_R * (1.0 - cos(a)); }
+	else
+	{
+		float l = u - TunnelArcEnd();
+		h = TUN_R * sin(TUN_ANG) + cos(TUN_ANG) * l;
+		v = -TUN_R * (1.0 - cos(TUN_ANG)) - sin(TUN_ANG) * l;
+	}
+	float2 q = e + d * h;
+	return float3(q.x, y0 + v, q.y);
+}
+float DigDelay(uint w) { return Rand(w * 71u + 5u) * 0.6; }   // the bottom layer does not all go in on the same frame
+float RiseStart() { return TunnelArcEnd() + 1.5; }             // a rising head starts 1.5 m down the shaft
+// path coordinate of point s at time t (s since the state began)
+float TunnelU(uint stt, uint w, float4 lp, float t, float sp, int s)
+{
+	if (stt == S_DIVE) return lp.w * max(t - DigDelay(w), 0.0) - s * sp;
+	return RiseStart() - lp.w * t + s * sp;
+}
+
+// ------------------------------------------------------------------ the serpent: the travelling swarm as one body
+// The CPU writes the head's recent path: _PathP[0] is the head now, _PathP[1] lies _PathD0 behind it, every further sample
+// _PathDs behind the one before. _PathN holds a normal per sample, carried along the path without flips (parallel transport).
+// Every member worm has a fixed slot: a distance s from the head, an angle and a radius in the cross-section. The section
+// turns along the body (twist) and slowly about it (spin), so the worms wind round the body. What the head did, the body
+// does a moment later: the waves travel down it by themselves.
+float3 PathAt(float s, out float3 T, out float3 Nn)
+{
+	float f = s < _PathD0 ? s / max(_PathD0, 1e-4) : 1.0 + (s - _PathD0) / _PathDs;
+	f = clamp(f, 0.0, (float)_PathCount - 1.001);
+	uint i = (uint)f;
+	float a = f - i;
+	float3 p0 = _PathP[i].xyz, p1 = _PathP[i + 1].xyz;
+	T = SafeNorm(p0 - p1, float3(1, 0, 0));   // toward the head
+	float3 n = lerp(_PathN[i].xyz, _PathN[i + 1].xyz, a);
+	Nn = SafeNorm(n - dot(n, T) * T, float3(0, 1, 0));
+	return lerp(p0, p1, a);
+}
+// thick in the middle, a blunt head, a long thin tail
+float SerpentRadius(float s)
+{
+	float L = max(_SerpentLen, 1.0);
+	return _SerpentR * lerp(0.45, 1.0, smoothstep(0.0, 0.12 * L, s)) * lerp(1.0, 0.25, smoothstep(0.55 * L, L, s));
+}
+bool SerpentMember(uint w) { return Rand(w * 97u + 11u) < _SerpentShare; }
+float3 SerpentTarget(uint w, int k, float sp)
+{
+	// the worm lies on a helix round the body: along the body it advances only as far as its own length allows once the
+	// winding is counted (else the twist would stretch it)
+	float rr = sqrt(Rand(w * 101u + 2u));
+	float ds = sp * 0.95 / sqrt(1.0 + (rr * _SerpentR * _SerpentTwist) * (rr * _SerpentR * _SerpentTwist));
+	float s = Rand(w * 101u + 1u) * max(_SerpentLen - (PPW - 1) * ds, 1.0) + k * ds;   // head toward the serpent's head
+	float3 T, N;
+	float3 c = PathAt(s, T, N);
+	float3 B = cross(T, N);
+	float rho = rr * SerpentRadius(s);
+	float a = Rand(w * 101u + 3u) * 6.2831853 + _SerpentTwist * s + _SerpentSpin;
+	return c + (N * cos(a) + B * sin(a)) * rho;
+}
+// its slot (head, middle and tail) is under the ground
+bool SerpentHidden(uint w, float sp, float r)
+{
+	float3 a = SerpentTarget(w, 0, sp), b = SerpentTarget(w, PPW / 2, sp), c = SerpentTarget(w, PPW - 1, sp);
+	return a.y + r < GroundH(a.xz) && b.y + r < GroundH(b.xz) && c.y + r < GroundH(c.xz);
+}
+
+// ------------------------------------------------------------------ per worm
+// Muscles: rest length with a peristaltic wave, a travelling bending wave about the up axis, and head steering toward a
+// desired direction. Every muscle correction is applied so that the worm's centre of mass does not move.
+[numthreads(64, 1, 1)]
+void ChainSolve(uint3 id : SV_DispatchThreadID)
+{
+	uint w = id.x;
+	if (w >= _WormCount) return;
+	uint stt = _State[w];
+	if (stt == S_UNDER) return;
+	if (stt == S_LEAP) { LeapPose(w, w * PPW); return; }
+	uint base = w * PPW;
+	float4 st = _Worm[w];
+	float4 info = _WormInfo[w];
+	float r = info.x, sp = info.y, kb = _BendK * info.z;
+	float act = st.z * _Activity;
+	float ph = st.x;
+	float3 p[PPW];
+	[unroll] for (int s0 = 0; s0 < PPW; s0++) p[s0] = _Pos[base + s0].xyz;
+	float3 pv[PPW];
+	float sup[PPW];
+	[unroll] for (int s3 = 0; s3 < PPW; s3++) { pv[s3] = _Prev[base + s3].xyz; sup[s3] = _Contact[base + s3].z; }
+	float3 sTarget[PPW];
+	float3 spT[PPW];   // the spire's targets: once per step, in a real loop (16 inlined copies stall the compiler); its own array so the
+	                   // serpent's and everyone else's stay in registers
+	if (stt == S_SPIRE) { [loop] for (int s11 = 0; s11 < PPW; s11++) spT[s11] = SpireTarget(w, s11, sp); }
+	[unroll] for (int s10 = 0; s10 < PPW; s10++) sTarget[s10] = stt == S_SERPENT ? SerpentTarget(w, s10, sp) : p[s10];
+	// burrowing: which points are already on the dig path (placed) and where
+	float4 lp = _Leap[w];
+	bool tun = (stt == S_DIVE || stt == S_RISE) && lp.w > 0.0;
+	bool pl[PPW];
+	float3 tp[PPW];
+	[unroll] for (int s6 = 0; s6 < PPW; s6++)
+	{
+		float u = tun ? TunnelU(stt, w, lp, st.w + _SubT, sp, s6) : -1.0;
+		pl[s6] = tun && u >= 0.0;
+		tp[s6] = pl[s6] ? TunnelPos(lp, r, u) : p[s6];
+		if (pl[s6]) p[s6] = tp[s6];
+	}
+
+	// where the head wants to go. Each worm decides for itself from what it can sense:
+	//   goal    its own spot in the heap (pull grows with distance, scaled by how restless it is right now)
+	//   crowd   away from where the density map is too high (the heap spills and its outline keeps changing)
+	//   trail   along the trail laid by heads ahead (streams; toward a reach target they become tendrils)
+	//   swirl   a slow drifting eddy field, mostly inside the heap (churning instead of combed rows)
+	//   wander  its own slow random heading
+	float hz = 0.07 + 0.13 * Rand(w * 7u + 3u);
+	float restless = 0.5 + 0.5 * sin(_Time * 6.2831853 * hz + Rand(w * 7u + 4u) * 6.2831853);
+	act *= lerp(1.0 - _Restless, 1.0, restless);
+	float a0 = Rand(w * 7u + 1u) * 6.2831853, rr = sqrt(Rand(w * 7u + 2u)) * _Goal.w * 0.6;
+	float3 g = _Goal.xyz + float3(cos(a0) * rr, 0, sin(a0) * rr);
+	bool leader = _Reach.w > 0 && Rand(w * 7u + 5u) < _Reach.w;
+	if (leader) { g = _Reach.xyz; act *= 2.0; }   // leaders go into a frenzy: faster muscles, the tendril shoots out
+	float2 to = g.xz - p[0].xz;
+	float dist = length(to);
+	float2 ton = dist > 1e-4 ? to / dist : float2(0, 0);
+	float inside = 1.0 - saturate(length(_Goal.xz - p[0].xz) / max(_Goal.w, 0.1));
+	// urgency: worms far from the heap's goal hurry (faster muscles), so the mass keeps up instead of only its edge moving
+	act *= 1.0 + _Urgency * saturate((length(_Goal.xz - p[0].xz) - _Goal.w) / max(_Goal.w, 0.1));
+	// random bursts: every _SpurtLen seconds each worm rolls a dice; a _SpurtShare of them speed up (_SpurtFast)
+	// or slow down (_SpurtSlow) for that slot. act drives the push, the wave tempo and the squeeze together, while the wave's width
+	// is capped, so a fast worm crawls faster with a quicker wiggle, not a wider one. Each worm's slots are offset, so they never sync.
+	if (_SpurtShare > 0.0 && _SpurtLen > 0.01)
+	{
+		float slotT = _Time / _SpurtLen + Rand(w * 13u + 9u);
+		uint sk = w * 2654435761u + (uint)floor(slotT) * 40503u;
+		if (Rand(sk) < _SpurtShare) act *= Rand(sk + 17u) < 0.5 ? _SpurtFast : _SpurtSlow;
+	}
+	float pull = leader ? 1.5 * _Attract : _Attract * saturate(dist / max(_Goal.w, 0.1)) * lerp(0.35, 1.0, restless);
+	float2 hp = p[0].xz;
+	float dC = Dens(hp);
+	float2 grad = float2(Dens(hp + float2(_FieldCell, 0)) - Dens(hp - float2(_FieldCell, 0)), Dens(hp + float2(0, _FieldCell)) - Dens(hp - float2(0, _FieldCell)));
+	float gl = length(grad);
+	float2 crowd = gl > 0.5 ? -grad / gl * _Crowd * saturate((dC - _DensityRef) / _DensityRef) * inside : float2(0, 0);
+	uint fi = FieldIndex(hp);
+	float2 tv = float2(_Trail[fi * 3], _Trail[fi * 3 + 1]);
+	float tamt = _Trail[fi * 3 + 2] / 256.0;
+	float tl2 = length(tv);
+	float2 follow = (tl2 > 1e-3 && !leader) ? tv / tl2 * _Follow * saturate(tamt / _TrailRef) * saturate(tl2 / 256.0 / max(tamt, 1e-3) * 1.5) : float2(0, 0);
+	float2 swirl = Swirl(hp, _Time) * _Swirl * lerp(0.25, 1.0, inside);
+	// circulation: inside the heap each worm circles the centre, half one way, half the other, so bodies lie around the heap
+	// and cross each other instead of all pointing up the slope (the haystack look)
+	float2 rad = p[0].xz - _Goal.xz;
+	float rl = length(rad);
+	float orbitSign = Rand(w * 7u + 6u) < 0.5 ? -1.0 : 1.0;
+	float2 orbit = rl > 0.2 ? float2(-rad.y, rad.x) / rl * orbitSign * _Orbit * inside : float2(0, 0);
+	float2 des2 = ton * pull + crowd + follow + swirl + orbit + float2(cos(st.y), sin(st.y)) * _Wander;
+	float3 hd0 = SafeNorm(p[0] - p[1], float3(1, 0, 0));
+	float dl = length(des2);
+	des2 = dl > 1e-4 ? des2 / dl : SafeNorm(float3(hd0.x, 0, hd0.z), float3(1, 0, 0)).xz;
+	// climbing needs footing: a head with something under it that bumps into worms rises; a head in the air droops
+	float4 hc = _Contact[base];
+	bool headAir = hc.x < 0.5 && hc.z < 0.2;
+	float climb = headAir ? -0.8 : (hc.y >= 1.5 ? _Climb : -0.2);
+	// a body mostly in the air stops swimming (it only twitches), so worms do not fling themselves off the pile
+	float airFrac = 0;
+	[unroll] for (int s4 = 0; s4 < PPW; s4++) { float4 c4 = _Contact[base + s4]; airFrac += (c4.x < 0.5 && c4.z < 0.2) ? 1.0 : 0.0; }
+	airFrac /= PPW;
+	act *= 1.0 - 0.75 * airFrac;
+	float3 des = normalize(float3(des2.x, climb, des2.y));
+	if (tun) { des = normalize(float3(des2.x, 0.15, des2.y)); act = max(act, 0.8); }   // the free part wriggles while it is dragged in / crawls off
+	else if (stt == S_DIVE) { des = normalize(float3(hd0.x * 0.5, -1.0, hd0.z * 0.5)); act = max(act, 1.0) * 1.5; }
+	else if (stt == S_LEAP) { des = hd0; act = max(act, 0.8); }
+	else if (stt == S_RISE) { des = normalize(float3(des2.x * 0.5, 1.0, des2.y * 0.5)); act = max(act, 1.0) * 1.3; }
+	else if (stt == S_SPIRE) { des = float3(0, 1, 0); act = max(act, 1.0); }
+	else if (stt == S_SERPENT) { act = max(act, 0.9); }
+
+	// peristaltic thrust: the head reaches toward `des` and the rest of the body is pushed back by the same amount (no net
+	// force). Only the backward grip of the ground turns this into forward motion.
+	if (_Advance != 0 && !tun && stt != S_SERPENT)
+	{
+		float3 dh = des * (_Thrust * act * _Dt);
+		p[0] += dh * ((PPW - 1.0) / PPW);
+		[unroll] for (int s2 = 1; s2 < PPW; s2++) p[s2] -= dh / PPW;
+	}
+
+	for (int it = 0; it < _Iter; it++)
+	{
+		// links: rest length breathes with a peristaltic wave
+		[unroll] for (int s = 0; s < PPW - 1; s++)
+		{
+			float L = sp * (1.0 + _PeriAmp * saturate(act) * sin(_PeriK * s - ph * 1.3));
+			float3 dd = p[s + 1] - p[s];
+			float l = length(dd);
+			// a placed point does not give: its free neighbour takes the whole correction (that is the drag)
+			float wa = pl[s] ? 0.0 : 1.0, wb = pl[s + 1] ? 0.0 : 1.0;
+			if (l > 1e-6 && wa + wb > 0.0) { float3 c = dd * ((l - L) / l / (wa + wb)); p[s] += c * wa; p[s + 1] -= c * wb; }
+		}
+		// bending: each joint wants the angle of a wave travelling from head to tail (centre of mass conserved)
+		[unroll] for (int b = 1; b < PPW - 1; b++)
+		{
+			if (pl[b - 1] || pl[b] || pl[b + 1]) continue;
+			float3 u = p[b] - p[b + 1], v = p[b - 1] - p[b];
+			float lu = length(u), lv = length(v);
+			float th = _WaveAmp * min(act, 1.0) * sin(_WaveK * b - ph) * (1.0 - abs(u.y) / max(lu, 1e-6));   // no corkscrews on vertical parts
+			if (lu > 1e-6 && lv > 1e-6)
+			{
+				float3 ta = p[b] + RotY(u / lu, th) * lv;
+				float3 tc = p[b] - RotY(v / lv, -th) * lu;
+				float3 da = (ta - p[b - 1]) * kb, dc = (tc - p[b + 1]) * kb;
+				float3 sh = (da + dc) / 3.0;
+				p[b - 1] += da - sh; p[b + 1] += dc - sh; p[b] -= sh;
+			}
+		}
+		// steering: the head segment turns toward the desired direction (centre of mass conserved)
+		{
+			float3 hd = p[0] - p[1];
+			float hl = length(hd);
+			if (hl > 1e-6 && !pl[0] && !pl[1] && !pl[2])
+			{
+				float3 nd = SafeNorm(lerp(hd / hl, des, lerp(_SteerRate, _SteerIn, inside)), hd / hl);   // firmer steering inside the heap
+				float3 d0 = p[1] + nd * hl - p[0];
+				float3 sh = d0 / 3.0;
+				p[0] += d0 - sh; p[1] -= sh; p[2] -= sh;
+			}
+		}
+		// spire: every point is pulled toward its place in the twisting, whipping column (the swarm climbing itself)
+		if (stt == S_SPIRE)
+		{
+			// grab chaos keeps the old firm pull (a soft one let the column sag short of the craft and worms fly off it, stretched):
+			// only the shape changes. The tail is held a little less (the writhe shows), the lashing worms a little less still.
+			float kSp = lerp(0.08, 0.3, Rand(w * 11u + 6u));
+			float cz2 = _Irreg.z * (1.0 - _Ball.w * (1.0 - step(0.5, _Mound.x)));   // the old ball keeps its firm pull
+			float kc = kSp * (Rand(w * 23u + 1u) < 0.12 ? 0.7 : 1.0);
+			[unroll] for (int q2 = 0; q2 < PPW; q2++)
+			{
+				float kq = lerp(kSp, kc * lerp(1.0, 0.8, q2 / (PPW - 1.0)), cz2);
+				p[q2] += (spT[q2] - p[q2]) * kq * _SpireHold;
+			}
+		}
+		// serpent: the same, toward the worm's slot in the travelling body (looser for some, so the outline stays alive)
+		if (stt == S_SERPENT)
+		{
+			float kp = lerp(0.12, 0.35, Rand(w * 101u + 6u)) * _SerpentHold;
+			[unroll] for (int q3 = 0; q3 < PPW; q3++) p[q3] += (sTarget[q3] - p[q3]) * kp;
+		}
+		// ground, with wet adhesion: a point that comes within the stick band of the ground is held on it (a climbing head is not).
+		// Diving and leaping worms pass through it; for rising and spire worms it is one-way (it only stops a point coming
+		// from above): the spire comes up out of the soil, and when its guide lets go its worms land on the ground.
+		// A burrowing worm's free part lies on the ground like any surface worm (full ground; its buried part is placed).
+		if (stt == S_SURFACE || stt == S_RISE || stt == S_SPIRE || tun)
+		{
+			[unroll] for (int q = 0; q < PPW; q++)
+			{
+				if (pl[q]) continue;
+				float h = GroundH(p[q].xz) + r;
+				if (!tun && (stt == S_RISE || stt == S_SPIRE) && pv[q].y < GroundH(pv[q].xz) + r * 0.5) continue;
+				float band = ((q == 0 && climb > 0) || _Prev[base + q].w > 0.5) ? 0.0 : _Stick * r;   // a flung point is not caught by the stick band
+				if (p[q].y < h + band) p[q].y = h;
+			}
+		}
+		// friction (the soil grips diving worms like the ground does; the spire is guided, not rubbing)
+		if ((stt != S_SPIRE || _SpireHold < 0.5) && stt != S_SERPENT)
+		{
+			float3 t0[PPW];
+			[unroll] for (int f = 0; f < PPW; f++) t0[f] = SafeNorm(p[max(f - 1, 0)] - p[min(f + 1, PPW - 1)], float3(1, 0, 0));
+			[unroll] for (int f2 = 0; f2 < PPW; f2++) { if (pl[f2] || _Prev[base + f2].w > 0.5) continue; float gnd; p[f2] = Friction(p[f2], pv[f2], t0[f2], r, sup[f2], HeadGrip(f2), gnd); }
+		}
+		[unroll] for (int s7 = 0; s7 < PPW; s7++) if (pl[s7]) p[s7] = tp[s7];
+	}
+	[unroll] for (int s1 = 0; s1 < PPW; s1++) _Pos[base + s1].xyz = p[s1];
+
+	if (_Advance != 0)
+	{
+		st.x += _WaveW * act * _Dt;
+		st.y += (Rand(w * 977u + _Step * 7919u) * 2.0 - 1.0) * _WanderTurn * _Dt;
+		_Worm[w] = st;
+	}
+}
+
+// Friction against the ground and against worms below: forward along the body slides, backward and sideways grip.
+[numthreads(64, 1, 1)]
+void Finish(uint3 id : SV_DispatchThreadID)
+{
+	uint w = id.x;
+	if (w >= _WormCount) return;
+	if (_State[w] == S_UNDER || _State[w] == S_LEAP || _State[w] == S_SERPENT || (_State[w] == S_SPIRE && _SpireHold >= 0.5)) return;
+	uint base = w * PPW;
+	uint stt = _State[w];
+	float4 info = _WormInfo[w];
+	float r = info.x;
+	float4 lp = _Leap[w];
+	bool tun = (stt == S_DIVE || stt == S_RISE) && lp.w > 0.0;
+	float tnow = _Worm[w].w + _SubT;
+	float3 p[PPW];
+	[unroll] for (int s0 = 0; s0 < PPW; s0++) p[s0] = _Pos[base + s0].xyz;
+	[unroll] for (int s = 0; s < PPW; s++)
+	{
+		uint i = base + s;
+		float4 cc = _Contact[i];
+		// burrowing: a point on the dig path stays exactly on it (the collision pass may have nudged it)
+		float u = tun ? TunnelU(stt, w, lp, tnow, info.y, s) : -1.0;
+		if (tun && u >= 0.0) { _Pos[i].xyz = TunnelPos(lp, r, u); cc.x = 0; _Contact[i] = cc; continue; }
+		float3 t = p[max(s - 1, 0)] - p[min(s + 1, PPW - 1)];
+		t = SafeNorm(t, float3(1, 0, 0));
+		// friction already ran inside ChainSolve; once more here after the last collision pass, and record ground contact
+		float gnd;
+		float gnd0 = 0;
+		float3 q = _Prev[i].w > 0.5 ? p[s] : Friction(p[s], _Prev[i].xyz, t, r, cc.z, HeadGrip(s), gnd0);   // flung: no friction in flight
+		gnd = gnd0;
+		// the ground once more after the last collision pass (the pile's push-out can shove points under it). Same rule as in
+		// ChainSolve: surface worms and the free part of burrowing worms always; the old rise and the spire only from above
+		// (a point still coming up out of the soil passes); the old straight-down dive never.
+		if (_FinishClamp != 0 && (tun || stt != S_DIVE))
+		{
+			float h = GroundH(q.xz) + r;
+			float3 pv0 = _Prev[i].xyz;
+			bool fromBelow = !tun && (stt == S_RISE || stt == S_SPIRE) && pv0.y < GroundH(pv0.xz) + r * 0.5;
+			if (!fromBelow && q.y < h) q.y = h;
+		}
+		_Pos[i].xyz = q;
+		cc.x = gnd;
+		_Contact[i] = cc;
+	}
+}
+
+// Tube frames: parallel transport from the head, so the rendered rings do not twist.
+[numthreads(64, 1, 1)]
+void Frames(uint3 id : SV_DispatchThreadID)
+{
+	uint w = id.x;
+	if (w >= _WormCount) return;
+	if (_State[w] == S_UNDER) return;
+	uint base = w * PPW;
+	float3 p[PPW];
+	[unroll] for (int s0 = 0; s0 < PPW; s0++) p[s0] = _Pos[base + s0].xyz;
+	float3 n = float3(0, 1, 0);
+	[unroll] for (int s = 0; s < PPW; s++)
+	{
+		float3 t = p[max(s - 1, 0)] - p[min(s + 1, PPW - 1)];
+		t = SafeNorm(t, float3(1, 0, 0));
+		float3 m = n - dot(n, t) * t;
+		if (dot(m, m) < 1e-6) { m = float3(1, 0, 0) - t.x * t; }
+		n = normalize(m);
+		_Frame[base + s] = float4(n, 0);
+	}
+}
+
+// ------------------------------------------------------------------ P3: state changes, once per step
+// Hidden worms are parked under the creature (the only place anything is carried along: nobody can see it). They come out
+// by budget: leaping ahead of a fast creature, rising around a slow one, or all at once into the spire under the craft.
+void PlaceWorm(uint base, float3 head, float3 dir, float sp, float3 vel)
+{
+	[unroll] for (int s = 0; s < PPW; s++)
+	{
+		float3 q = head - dir * (s * sp);
+		_Pos[base + s].xyz = q;
+		_Prev[base + s].xyz = q - vel * _Dt;
+		_RenderPrev[base + s] = float4(q, _Pos[base + s].w);
+		_Contact[base + s] = 0;
+	}
+}
+
+// The kill blast throws worm w: strongest at the centre, fading to the blast's reach; out more than up (about 25-55 degrees),
+// each worm a little differently (the whole worm moves as one, with a small spin from head to tail); it then flies free.
+void BlastKick(uint w, uint base)
+{
+	float k = 0.6 + 0.4 * Rand(w * 19u + 1u);   // a blast never throws faster than its fling speed
+	float3 m = _Pos[base + PPW / 2].xyz - _Ball.xyz;
+	float fall = max(0.15, pow(saturate(1.0 - length(m) / _BlastR), 0.7));
+	// out more than up (about 25-55 degrees): its own side of the blast, a worm right at the centre a random one
+	float2 hz = length(m.xz) > 0.5 ? normalize(m.xz) : normalize(float2(Rand(w * 19u + 9u) - 0.5, Rand(w * 19u + 10u) - 0.5) + 1e-4);
+	float el = lerp(0.45, 0.95, Rand(w * 19u + 2u));
+	float az = (Rand(w * 19u + 3u) - 0.5) * 0.7;
+	float2 hr = float2(hz.x * cos(az) - hz.y * sin(az), hz.x * sin(az) + hz.y * cos(az));
+	float3 dir = float3(hr.x * cos(el), sin(el), hr.y * cos(el));
+	float3 spin = normalize(float3(Rand(w * 19u + 5u) - 0.5, Rand(w * 19u + 6u) - 0.5, Rand(w * 19u + 7u) - 0.5) + 1e-4) * (0.6 + 1.6 * Rand(w * 19u + 8u));
+	[unroll] for (int s6 = 0; s6 < PPW; s6++)
+	{
+		float3 q = _Pos[base + s6].xyz;
+		float3 v = dir * _Burst * k * fall + spin * ((s6 - (PPW - 1) * 0.5) / (PPW - 1.0));
+		_Prev[base + s6] = float4(q - v * _Dt, 1);   // w = 1: flung, flies free (no drag, fast cap) until it comes down
+	}
+}
+
+[numthreads(64, 1, 1)]
+void StateUpdate(uint3 id : SV_DispatchThreadID)
+{
+	uint w = id.x;
+	if (w >= _WormCount) return;
+	uint base = w * PPW;
+	uint stt = _State[w];
+	float4 st = _Worm[w];
+	float4 info = _WormInfo[w];
+	float r = info.x, sp = info.y;
+	st.w += _StepDt;
+	bool below = true, above = true;
+	[unroll] for (int s = 0; s < PPW; s++)
+	{
+		float3 q = _Pos[base + s].xyz;
+		float g = GroundH(q.xz);
+		if (q.y > g - r * 1.5) below = false;
+		if (q.y < g + r * 0.5) above = false;
+	}
+	float2 hd = _Pos[base].xz - _Anchor.xz;
+	uint ns = stt;
+	float4 lp = _Leap[w];
+	bool tun = (stt == S_DIVE || stt == S_RISE) && lp.w > 0.0;
+	if (stt == S_SURFACE)
+	{
+		// a worm nearing the edge of the ground map digs in (head first, in sight) before it could reach ground the map does not know
+		bool edge = _GridReach > 0.0 && length(hd) > _GridReach * 0.85;
+		if (_DiveMode >= 2 || edge || (_DiveMode == 1 && length(hd) > _DiveDist))
+		{
+			if (_TunnelOn == 0) { ns = S_DIVE; _Leap[w] = float4(0, 0, 0, 0); }
+			else
+			{
+				// only a worm whose head lies on the ground digs in; worms on top of the pile wait until the layer under them
+				// has gone, so the pile shrinks from the bottom
+				float3 h0 = _Pos[base].xyz, h1 = _Pos[base + 1].xyz;
+				bool onGround = _Contact[base].x > 0.5 || h0.y < GroundH(h0.xz) + r * 2.5 || _DiveMode == 3;   // a quick strike: all at once
+				if (onGround)
+				{
+					float2 dir = h0.xz - h1.xz;
+					float ang = dot(dir, dir) > 1e-8 ? atan2(dir.y, dir.x) : Rand(w * 29u + _Step) * 6.2831853;
+					float speed = lerp(1.5, 3.0, Rand(w * 83u + 1u)) * (_DiveMode == 3 ? 3.0 : (_DiveMode == 2 ? 1.8 : 1.0));
+					_Leap[w] = float4(h0.x, h0.z, ang, speed);
+					ns = S_DIVE;
+				}
+			}
+		}
+	}
+	else if (stt == S_DIVE)
+	{
+		if (tun) { if (TunnelU(stt, w, lp, st.w, sp, PPW - 1) > TunnelArcEnd() + 1.0 || st.w > 15.0) ns = S_UNDER; }   // the tail is down the shaft
+		else if (below || st.w > 6.0) ns = S_UNDER;
+	}
+	else if (stt == S_LEAP) { if ((st.w > 0.4 && below) || st.w > 8.0) ns = S_UNDER; }
+	else if (stt == S_RISE)
+	{
+		// a worm on its way up finishes coming out (it cannot back down its own tunnel); then it may dig in again
+		if (tun) { if (TunnelU(stt, w, lp, st.w, sp, PPW - 1) < 0.0 || st.w > 15.0) ns = S_SURFACE; }
+		else if (_DiveMode >= 2) { ns = S_DIVE; _Leap[w] = float4(0, 0, 0, 0); }
+		else if (above && st.w > 0.3) ns = S_SURFACE; else if (st.w > 10.0) ns = S_SURFACE;
+	}
+	else if (stt == S_SERPENT)
+	{
+		// the body lets go: worms under the ground stay hidden, the rest fall onto it and crawl on
+		if (_SerpentRelease != 0 || _SerpentOn == 0)
+		{
+			float3 mid = _Pos[base + PPW / 2].xyz;
+			// only worms already under the ground are hidden; stragglers above it drop onto it and crawl or dig in (
+			// nothing may vanish in sight; it used to hide every member after the attack plunge, stragglers too)
+			ns = mid.y < GroundH(mid.xz) - r ? S_UNDER : S_SURFACE;
+			_Leap[w] = float4(0, 0, 0, 0);
+		}
+	}
+	else if (stt == S_SPIRE)
+	{
+		// a blast goes off from the outside in: the outermost worms are thrown first and the core over the next 0.35 s, so the
+		// inner worms do not run into the outer ones that have not moved yet (they stayed clumped in the middle)
+		bool waitBlast = false;
+		if (_SpireRelease != 0 && _BlastR > 0 && _Burst > 0)
+		{
+			float dmid = length(_Pos[base + PPW / 2].xz - _Ball.xz);
+			waitBlast = _SpireT - _BlastT0 < 0.35 * saturate(1.0 - dmid / (_BallR * 1.3));
+		}
+		// the collapse: the lower column gives way, bottom first (by height share), and its worms become ordinary worms (gravity,
+		// ground, friction, each other). The guided top squashes down onto them, so they are pushed out by the mass above, not
+		// pulled out by moving targets (that looked like a cartoon spring)
+		if (_SpireRelease == 0 && Rand(w * 11u + 1u) < _ReleaseU)
+		{
+			ns = above ? S_SURFACE : S_RISE;
+			if (ns == S_RISE) _Leap[w] = float4(0, 0, 0, 0);
+		}
+		if (_SpireRelease != 0 && !waitBlast)
+		{
+			// handed over to the pile: worms fully above ground crawl on at once, the rest crawl out of the soil first
+			ns = above ? S_SURFACE : S_RISE;
+			if (ns == S_RISE) _Leap[w] = float4(0, 0, 0, 0);   // no dig path: the old one-way rise out of the soil
+			// (optional) a burst: every point flies outward (and a little up) from the ball centre
+			if (_Burst > 0)
+			{
+				if (_BlastR > 0) BlastKick(w, base);   // the kill blast
+				else
+				{
+					// the old burst: every point flies outward (and a little up) from the ball centre
+					float k = 0.6 + 0.8 * Rand(w * 19u + 1u);
+					[unroll] for (int s5 = 0; s5 < PPW; s5++)
+					{
+						float3 q = _Pos[base + s5].xyz;
+						float3 o = q - _Ball.xyz; o.y = max(o.y, 0) * 0.5;
+						float3 v = normalize(o + float3(0, 0.3, 0) + 1e-4) * _Burst * k;
+						_Prev[base + s5].xyz = q - v * _Dt;
+					}
+				}
+			}
+		}
+	}
+	else if (stt == S_UNDER)
+	{
+		// parked: lying flat 3 m under the creature
+		float a = Rand(w * 13u + 1u) * 6.2831853, rr = sqrt(Rand(w * 13u + 2u)) * _Goal.w;
+		float3 c = _Anchor.xyz + float3(cos(a) * rr, 0, sin(a) * rr);
+		c.y = GroundH(c.xz) - 10.0 - Rand(w * 13u + 3u) * 4.0;
+		float3 dir = float3(cos(a * 3.0), 0, sin(a * 3.0));
+		float3 ph = c + dir * (PPW * sp * 0.5), pd = dir, pvel = float3(0, 0, 0);
+		uint slot;
+		float roll = Rand(w * 7919u + _Step * 104729u);
+		float3 side = float3(-_Fwd.z, 0, _Fwd.x);
+		if (_SpireBudget > 0)
+		{
+			InterlockedAdd(_Counters[2], 1u, slot);
+			if (slot < _SpireBudget)
+			{
+				float u = Rand(w * 11u + 1u), phi = Rand(w * 11u + 2u) * 6.2831853, rho = sqrt(Rand(w * 11u + 3u)) * _SpireR;
+				float3 hp = _Spire.xyz + float3(cos(phi) * rho, 0, sin(phi) * rho);
+				hp.y = GroundH(hp.xz) - 0.3 - (1.0 - u) * 2.0;
+				ph = hp; pd = float3(0, 1, 0); pvel = float3(0, 10.0, 0);
+				ns = S_SPIRE;
+			}
+		}
+		else if (_SerpentBudget > 0 && SerpentMember(w) && SerpentHidden(w, sp, r))
+		{
+			// a member joins the travelling body at its own slot, but only where that slot is under the ground (nobody sees it appear)
+			InterlockedAdd(_Counters[3], 1u, slot);
+			if (slot < _SerpentBudget) ns = S_SERPENT;
+		}
+		else if (_LeapBudget > 0 && roll < _SpawnP)
+		{
+			InterlockedAdd(_Counters[0], 1u, slot);
+			if (slot < _LeapBudget)
+			{
+				// a pod: every worm spawned in this step shares a random spot and heading (from the step), plus its own offset
+				float2 podOff = float2(Rand(w * 31u + _Step), Rand(w * 37u + _Step)) * 2.0 - 1.0;
+				float3 pod = _Anchor.xyz + _Fwd.xyz * (8.0 + Rand(_Step * 7919u + 3u) * 40.0) + side * (Rand(_Step * 104729u + 5u) - 0.5) * _Goal.w * 2.5;
+				float3 e = pod + float3(podOff.x, 0, podOff.y) * 6.0;
+				e.y = GroundH(e.xz) - 0.05;
+				float3 dir = normalize(_Fwd.xyz * 0.5 + float3(0, 1, 0));
+				float3 vel = float3(0, 0, 0);
+				float ang = atan2(_Fwd.z, _Fwd.x) + (Rand(_Step * 31u + 7u) - 0.5) * 1.4 + (Rand(w * 47u + _Step) - 0.5) * 0.4;
+				float carry = length(_AnchorVel.xz) * (0.6 + 0.3 * Rand(w * 59u + _Step));
+				float seed = Rand(w * 53u + _Step * 3u);
+				_Leap[w] = float4(e.x, e.z, ang, floor(min(carry, 999.0)) + seed * 0.999);   // fixed in the ground, drifting forward
+				ph = e; pd = dir; pvel = vel;
+				ns = S_LEAP;
+			}
+		}
+		else if (_RiseBudget > 0 && roll < _SpawnP)
+		{
+			InterlockedAdd(_Counters[1], 1u, slot);
+			if (slot < _RiseBudget)
+			{
+				float a2 = Rand(w * 47u + _Step) * 6.2831853, r2 = sqrt(Rand(w * 53u + _Step)) * _Goal.w * 0.8;
+				float3 e = _Anchor.xyz + float3(cos(a2) * r2, 0, sin(a2) * r2);
+				e.y = GroundH(e.xz) - 0.05;
+				float3 dir = normalize(float3(cos(a2 * 5.0) * 0.4, 1.0, sin(a2 * 5.0) * 0.4));
+				ph = e; pd = dir; pvel = dir * 1.5;
+				ns = S_RISE;
+				// head first up a dig path: the path points into the ground opposite to where the worm will crawl off
+				_Leap[w] = _TunnelOn != 0 ? float4(e.x, e.z, a2 * 5.0 + 3.14159265, lerp(1.5, 2.5, Rand(w * 89u + _Step))) : float4(0, 0, 0, 0);
+			}
+		}
+		PlaceWorm(base, ph, pd, sp, pvel);
+		if (ns == S_RISE && _TunnelOn != 0)
+		{
+			float4 lr = _Leap[w];
+			[unroll] for (int s8 = 0; s8 < PPW; s8++)
+			{
+				float3 q = TunnelPos(lr, r, RiseStart() + s8 * sp);
+				_Pos[base + s8].xyz = q; _Prev[base + s8].xyz = q; _RenderPrev[base + s8] = float4(q, _Pos[base + s8].w);
+			}
+		}
+		if (ns == S_SERPENT)
+		{
+			[unroll] for (int s9 = 0; s9 < PPW; s9++)
+			{
+				float3 q = SerpentTarget(w, s9, sp);
+				_Pos[base + s9].xyz = q; _Prev[base + s9].xyz = q; _RenderPrev[base + s9] = float4(q, _Pos[base + s9].w);
+			}
+		}
+	}
+	// left far behind, outside the terrain grid (whose ground there is some other place): gone under at once
+	// last resort only (worms dig in from 85 % of the reach): a worm already digging in gets 20 m more to finish going under
+	float cullAt = _GridReach + ((ns == S_DIVE && _Leap[w].w > 0.0) ? 20.0 : 0.0);
+	if (_GridReach > 0.0 && (ns == S_SURFACE || ns == S_DIVE || ns == S_RISE) && length(_Pos[base].xz - _Anchor.xz) > cullAt) ns = S_UNDER;
+	// the blast also throws the worms the collapse already let go (once, with the spire's outside-in timing)
+	if (_BlastR > 0 && _Burst > 0 && _SpireRelease != 0 && (stt == S_SURFACE || stt == S_RISE) && _Prev[base].w < 0.5)
+	{
+		float3 mm = _Pos[base + PPW / 2].xyz - _Ball.xyz;
+		float delay = 0.35 * saturate(1.0 - length(mm.xz) / (_BallR * 1.3));
+		float tb = _SpireT - _BlastT0;
+		if (length(mm) < _BlastR && tb >= delay && tb - _StepDt <= delay) BlastKick(w, base);
+	}
+	if (ns != stt) { st.w = 0; _State[w] = ns; }
+	_Worm[w] = st;
+}
+
+// The local frame moved (the creature travelled far): every stored position goes into the new frame. Done rarely.
+[numthreads(256, 1, 1)]
+void Rebase(uint3 id : SV_DispatchThreadID)
+{
+	uint i = id.x;
+	if (i >= _PointCount) return;
+	_Pos[i].xyz = mul(_Rebase, float4(_Pos[i].xyz, 1)).xyz;
+	_Prev[i].xyz = mul(_Rebase, float4(_Prev[i].xyz, 1)).xyz;
+	_RenderPrev[i].xyz = mul(_Rebase, float4(_RenderPrev[i].xyz, 1)).xyz;
+}

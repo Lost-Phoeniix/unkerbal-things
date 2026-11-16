@@ -1,0 +1,8 @@
+bin/
+obj/
+# leviathan: the raw Sketchfab download (84 MB) stays local; build leftovers
+underwater/leviathan/src/
+underwater/leviathan/unity/build.log
+underwater/leviathan/unity/unity
+underwater/leviathan/unity/*.manifest
+bin-out/

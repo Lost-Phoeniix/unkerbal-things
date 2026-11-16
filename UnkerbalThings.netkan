@@ -1,0 +1,21 @@
+# Draft for a pull request to KSP-CKAN/NetKAN (file NetKAN/UnkerbalThings.netkan). Not used by the build and not shipped.
+# Name, author, version and download are filled in by CKAN from the GitHub releases; KSP versions come from UnkerbalThings.version.
+spec_version: v1.18
+identifier: UnkerbalThings
+$kref: '#/ckan/github/Lost-Phoeniix/unkerbal-things'
+$vref: '#/ckan/ksp-avc'
+# release tags are v0.1.0; CKAN's version is 0.1.0
+x_netkan_version_edit: '^v?(?<version>.+)$'
+# code MIT; the leviathan model and some sounds CC BY 4.0 (CREDITS.md)
+license:
+  - MIT
+  - CC-BY-4.0
+resources:
+  homepage: https://github.com/Lost-Phoeniix/unkerbal-things
+  repository: https://github.com/Lost-Phoeniix/unkerbal-things
+tags:
+  - plugin
+  - parts
+  - science
+  - sound
+  - graphics

@@ -1,0 +1,45 @@
+# Builds the mod on GitHub from this source and packs the installable zip.
+# A pushed tag v* also publishes the zip as a release, so a download can be traced to the build that made it.
+name: build
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: KSP reference libraries (stripped, no game code; from KSPModdingLibs)
+        run: |
+          wget --quiet https://github.com/KSPModdingLibs/KSPLibs/raw/main/KSP-1.12.5.zip -O /tmp/ksp.zip
+          unzip -q /tmp/ksp.zip -d /tmp/ksp
+      - name: Compile UnkerbalThings.dll
+        run: dotnet build UnkerbalThings.csproj -c Release -p:KSP_ROOT=/tmp/ksp -o out
+      - name: Pack GameData/UnkerbalThings
+        run: |
+          set -e
+          d=pkg/GameData/UnkerbalThings
+          mkdir -p $d/Leviathan $d/Sounds $d/Parts
+          cp out/UnkerbalThings.dll settings.cfg LICENSE CREDITS.md README.md UnkerbalThings.version $d/
+          cp -r assets/Shaders assets/Moho assets/DreadSounds $d/
+          cp underwater/leviathan/unity/leviathan.bundle $d/Leviathan/
+          cp underwater/leviathan/sounds/leviathan-jumpscare.wav underwater/leviathan/sounds/leviathan-growl.mp3 $d/Sounds/
+          cp Parts/*.cfg Parts/*.mu Parts/*.png $d/Parts/
+          (cd pkg && zip -qr ../UnkerbalThings.zip GameData)
+          sha256sum UnkerbalThings.zip out/UnkerbalThings.dll
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UnkerbalThings
+          path: UnkerbalThings.zip
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # the tag must be the version CKAN reads from UnkerbalThings.version
+        run: |
+          [ "$GITHUB_REF_NAME" = "$(jq -r '"v\(.VERSION.MAJOR).\(.VERSION.MINOR).\(.VERSION.PATCH)"' UnkerbalThings.version)" ] || { echo "tag does not match UnkerbalThings.version"; exit 1; }
+          gh release create "$GITHUB_REF_NAME" UnkerbalThings.zip --title "Unkerbal Things $GITHUB_REF_NAME" --notes "Built by GitHub Actions from this tag (run $GITHUB_RUN_ID). Unzip into your KSP 1.12 folder so that GameData/UnkerbalThings exists."

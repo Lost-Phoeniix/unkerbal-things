@@ -1,0 +1,230 @@
+PASS loud lit craft: kill never before 180 s (200 seeds)  200 kills, first 313 s
+PASS loud lit craft that sits still: it does kill in the end  kills 200/200
+     kill time on the clock: min 313 median 359 p90 418 max 504 s
+PASS kill times are spread, not one fixed moment  p10..p90 90 s
+PASS feints before the kill  feints min 1
+PASS every kill was a hit at speed  slowest killing hit 48,0 m/s
+PASS a scream for every real rise, none for a feint  screams 200, real rises 200, feints 200
+PASS spawned at 60 m: no kill before 180 s  first 196
+PASS a rise slower than the kill speed never destroys the craft  0/60 killed, 532 slow rises that touched or missed
+PASS it circles its prey  200/200 went round at least once, median sweep 2616 deg
+PASS it comes up to the craft's depth and slowly passes close by  closest pass p50 17 m, p95 22 m, at 11 m/s
+PASS it circles underneath the craft  below by p10 27 median 32 m
+PASS circle distance: inside the 60 m the water shows, never on top  p5 31 median 35 p95 62 m
+PASS every rise starts from well below the craft  shallowest start 103 m below
+     late sideways dodge at 6 m/s: 0 misses in 100 runs, 100 kills, killing hits at 48..48 m/s
+     late sideways dodge at 12 m/s: 0 misses in 100 runs, 100 kills, killing hits at 39..39 m/s
+     late sideways dodge at 20 m/s: 875 misses in 100 runs, 0 kills, killing hits at -..- m/s
+PASS after a miss at 20 m/s it comes round again
+     craft at 4 m/s: reacting: kills 60/60, close pass 60/60, within 150 m for 92 % of the time, misses 0
+     craft at 4 m/s: as before: kills 60/60, close pass 25/60, within 150 m for 88 % of the time, misses 0
+PASS craft at 4 m/s: no kill before 180 s
+PASS craft at 4 m/s: every kill a hit at speed, after a feint
+PASS craft at 4 m/s: it only moves where it points, turn limits hold  slip 0,00 deg, turn 110 deg/s, in sight 30,0
+PASS craft at 4 m/s: never faster than the rise  max 48,0
+PASS craft at 4 m/s: it stays with the craft  92 % (as before 88 %)
+PASS craft at 4 m/s: it gets its close pass  60/60 (as before 25)
+PASS craft at 4 m/s: it still kills  60/60 (as before 60)
+     craft at 10 m/s: reacting: kills 60/60, close pass 60/60, within 150 m for 94 % of the time, misses 0
+     craft at 10 m/s: as before: kills 60/60, close pass 7/60, within 150 m for 63 % of the time, misses 0
+PASS craft at 10 m/s: no kill before 180 s
+PASS craft at 10 m/s: every kill a hit at speed, after a feint
+PASS craft at 10 m/s: it only moves where it points, turn limits hold  slip 0,00 deg, turn 110 deg/s, in sight 30,0
+PASS craft at 10 m/s: never faster than the rise  max 48,0
+PASS craft at 10 m/s: it stays with the craft  94 % (as before 63 %)
+PASS craft at 10 m/s: it gets its close pass  60/60 (as before 7)
+PASS craft at 10 m/s: it still kills  60/60 (as before 60)
+     craft at 16 m/s: reacting: kills 60/60, close pass 60/60, within 150 m for 95 % of the time, misses 0
+     craft at 16 m/s: as before: kills 60/60, close pass 0/60, within 150 m for 34 % of the time, misses 0
+PASS craft at 16 m/s: no kill before 180 s
+PASS craft at 16 m/s: every kill a hit at speed, after a feint
+PASS craft at 16 m/s: it only moves where it points, turn limits hold  slip 0,00 deg, turn 110 deg/s, in sight 30,0
+PASS craft at 16 m/s: never faster than the rise  max 48,0
+PASS craft at 16 m/s: it stays with the craft  95 % (as before 34 %)
+PASS craft at 16 m/s: it gets its close pass  60/60 (as before 0)
+PASS craft at 16 m/s: it still kills  60/60 (as before 60)
+     craft at 24 m/s: reacting: kills 60/60, close pass 60/60, within 150 m for 97 % of the time, misses 0
+     craft at 24 m/s: as before: kills 0/60, close pass 0/60, within 150 m for 23 % of the time, misses 0
+PASS craft at 24 m/s: no kill before 180 s
+PASS craft at 24 m/s: every kill a hit at speed, after a feint
+PASS craft at 24 m/s: it only moves where it points, turn limits hold  slip 0,00 deg, turn 110 deg/s, in sight 30,0
+PASS craft at 24 m/s: never faster than the rise  max 48,0
+     craft at 34 m/s: reacting: kills 60/60, close pass 60/60, within 150 m for 69 % of the time, misses 0
+     craft at 34 m/s: as before: kills 0/60, close pass 0/60, within 150 m for 22 % of the time, misses 0
+PASS craft at 34 m/s: no kill before 180 s
+PASS craft at 34 m/s: every kill a hit at speed, after a feint
+PASS craft at 34 m/s: it only moves where it points, turn limits hold  slip 0,00 deg, turn 110 deg/s, in sight 30,0
+PASS craft at 34 m/s: never faster than the rise  max 48,0
+PASS a craft faster than its pace gets away  0/60 killed at 42 m/s
+     craft at rest: near 91 %, passes 2,0 a run, 14,7 s beside it, feints seen 40/40 (worst 32 m), cues 8,1, under the craft: hard turns 2 % of the time, 2,2 swings a minute, kills 40/40, misses 0
+     craft at 4 m/s straight: near 92 %, passes 1,7 a run, 12,2 s beside it, feints seen 40/40 (worst 35 m), cues 7,5, under the craft: hard turns 2 % of the time, 2,3 swings a minute, kills 40/40, misses 0
+PASS craft at 4 m/s straight: it stays with the craft  92 %
+PASS craft at 4 m/s straight: the close pass happens and lasts  40/40 runs, 12,2 s (at rest 14,7 s)
+PASS craft at 4 m/s straight: it swims calmly under the craft  2 % hard turns, 2,3 swings a minute
+PASS craft at 4 m/s straight: feints pass within sight  40/40
+PASS craft at 4 m/s straight: as many cues as at rest  7,5 (at rest 8,1)
+PASS craft at 4 m/s straight: no kill before 180 s, limits hold
+     craft at 4 m/s zigzag, 50 deg either side every 12 s: near 92 %, passes 1,8 a run, 10,4 s beside it, feints seen 40/40 (worst 40 m), cues 7,5, under the craft: hard turns 2 % of the time, 3,9 swings a minute, kills 40/40, misses 0
+PASS craft at 4 m/s zigzag, 50 deg either side every 12 s: it stays with the craft  92 %
+PASS craft at 4 m/s zigzag, 50 deg either side every 12 s: the close pass happens and lasts  40/40 runs, 10,4 s (at rest 14,7 s)
+PASS craft at 4 m/s zigzag, 50 deg either side every 12 s: it swims calmly under the craft  2 % hard turns, 3,9 swings a minute
+PASS craft at 4 m/s zigzag, 50 deg either side every 12 s: feints pass within sight  40/40
+PASS craft at 4 m/s zigzag, 50 deg either side every 12 s: as many cues as at rest  7,5 (at rest 8,1)
+PASS craft at 4 m/s zigzag, 50 deg either side every 12 s: no kill before 180 s, limits hold
+     craft at 4 m/s in a circle of 120 m: near 91 %, passes 1,5 a run, 9,0 s beside it, feints seen 40/40 (worst 36 m), cues 7,5, under the craft: hard turns 2 % of the time, 2,2 swings a minute, kills 40/40, misses 0
+PASS craft at 4 m/s in a circle of 120 m: it stays with the craft  91 %
+PASS craft at 4 m/s in a circle of 120 m: the close pass happens and lasts  38/40 runs, 9,0 s (at rest 14,7 s)
+PASS craft at 4 m/s in a circle of 120 m: it swims calmly under the craft  2 % hard turns, 2,2 swings a minute
+PASS craft at 4 m/s in a circle of 120 m: feints pass within sight  40/40
+PASS craft at 4 m/s in a circle of 120 m: as many cues as at rest  7,5 (at rest 8,1)
+PASS craft at 4 m/s in a circle of 120 m: no kill before 180 s, limits hold
+     craft at 4 m/s turning back every 25 s: near 89 %, passes 1,8 a run, 10,9 s beside it, feints seen 40/40 (worst 44 m), cues 7,5, under the craft: hard turns 2 % of the time, 3,6 swings a minute, kills 40/40, misses 0
+PASS craft at 4 m/s turning back every 25 s: it stays with the craft  89 %
+PASS craft at 4 m/s turning back every 25 s: the close pass happens and lasts  39/40 runs, 10,9 s (at rest 14,7 s)
+PASS craft at 4 m/s turning back every 25 s: it swims calmly under the craft  2 % hard turns, 3,6 swings a minute
+PASS craft at 4 m/s turning back every 25 s: feints pass within sight  40/40
+PASS craft at 4 m/s turning back every 25 s: as many cues as at rest  7,5 (at rest 8,1)
+PASS craft at 4 m/s turning back every 25 s: no kill before 180 s, limits hold
+     craft at 4 m/s stop and go every 20 s: near 92 %, passes 1,8 a run, 12,4 s beside it, feints seen 40/40 (worst 37 m), cues 7,6, under the craft: hard turns 2 % of the time, 4,2 swings a minute, kills 40/40, misses 0
+PASS craft at 4 m/s stop and go every 20 s: it stays with the craft  92 %
+PASS craft at 4 m/s stop and go every 20 s: the close pass happens and lasts  40/40 runs, 12,4 s (at rest 14,7 s)
+PASS craft at 4 m/s stop and go every 20 s: it swims calmly under the craft  2 % hard turns, 4,2 swings a minute
+PASS craft at 4 m/s stop and go every 20 s: feints pass within sight  40/40
+PASS craft at 4 m/s stop and go every 20 s: as many cues as at rest  7,6 (at rest 8,1)
+PASS craft at 4 m/s stop and go every 20 s: no kill before 180 s, limits hold
+     craft at 4 m/s always sideways to the fish: near 90 %, passes 1,0 a run, 6,9 s beside it, feints seen 40/40 (worst 35 m), cues 7,6, under the craft: hard turns 2 % of the time, 2,5 swings a minute, kills 40/40, misses 0
+PASS craft at 4 m/s always sideways to the fish: it stays with the craft  90 %
+PASS craft at 4 m/s always sideways to the fish: the close pass happens and lasts  31/40 runs, 6,9 s (at rest 14,7 s)
+PASS craft at 4 m/s always sideways to the fish: it swims calmly under the craft  2 % hard turns, 2,5 swings a minute
+PASS craft at 4 m/s always sideways to the fish: feints pass within sight  40/40
+PASS craft at 4 m/s always sideways to the fish: as many cues as at rest  7,6 (at rest 8,1)
+PASS craft at 4 m/s always sideways to the fish: no kill before 180 s, limits hold
+     craft at 4 m/s random new heading every 5-15 s: near 92 %, passes 1,6 a run, 9,6 s beside it, feints seen 40/40 (worst 40 m), cues 7,8, under the craft: hard turns 2 % of the time, 3,4 swings a minute, kills 40/40, misses 0
+PASS craft at 4 m/s random new heading every 5-15 s: it stays with the craft  92 %
+PASS craft at 4 m/s random new heading every 5-15 s: the close pass happens and lasts  40/40 runs, 9,6 s (at rest 14,7 s)
+PASS craft at 4 m/s random new heading every 5-15 s: it swims calmly under the craft  2 % hard turns, 3,4 swings a minute
+PASS craft at 4 m/s random new heading every 5-15 s: feints pass within sight  40/40
+PASS craft at 4 m/s random new heading every 5-15 s: as many cues as at rest  7,8 (at rest 8,1)
+PASS craft at 4 m/s random new heading every 5-15 s: no kill before 180 s, limits hold
+     craft at 8 m/s straight: near 94 %, passes 2,0 a run, 15,6 s beside it, feints seen 40/40 (worst 38 m), cues 6,9, under the craft: hard turns 3 % of the time, 5,5 swings a minute, kills 40/40, misses 0
+PASS craft at 8 m/s straight: it stays with the craft  94 %
+PASS craft at 8 m/s straight: the close pass happens and lasts  40/40 runs, 15,6 s (at rest 14,7 s)
+PASS craft at 8 m/s straight: it swims calmly under the craft  3 % hard turns, 5,5 swings a minute
+PASS craft at 8 m/s straight: feints pass within sight  40/40
+PASS craft at 8 m/s straight: as many cues as at rest  6,9 (at rest 8,1)
+PASS craft at 8 m/s straight: no kill before 180 s, limits hold
+     craft at 8 m/s zigzag, 50 deg either side every 12 s: near 93 %, passes 1,9 a run, 15,0 s beside it, feints seen 40/40 (worst 49 m), cues 7,2, under the craft: hard turns 4 % of the time, 9,4 swings a minute, kills 40/40, misses 0
+PASS craft at 8 m/s zigzag, 50 deg either side every 12 s: it stays with the craft  93 %
+PASS craft at 8 m/s zigzag, 50 deg either side every 12 s: the close pass happens and lasts  40/40 runs, 15,0 s (at rest 14,7 s)
+PASS craft at 8 m/s zigzag, 50 deg either side every 12 s: it swims calmly under the craft  4 % hard turns, 9,4 swings a minute
+PASS craft at 8 m/s zigzag, 50 deg either side every 12 s: feints pass within sight  40/40
+PASS craft at 8 m/s zigzag, 50 deg either side every 12 s: as many cues as at rest  7,2 (at rest 8,1)
+PASS craft at 8 m/s zigzag, 50 deg either side every 12 s: no kill before 180 s, limits hold
+     craft at 8 m/s in a circle of 120 m: near 86 %, passes 2,0 a run, 14,2 s beside it, feints seen 40/40 (worst 39 m), cues 7,2, under the craft: hard turns 3 % of the time, 5,4 swings a minute, kills 40/40, misses 0
+PASS craft at 8 m/s in a circle of 120 m: it stays with the craft  86 %
+PASS craft at 8 m/s in a circle of 120 m: the close pass happens and lasts  40/40 runs, 14,2 s (at rest 14,7 s)
+PASS craft at 8 m/s in a circle of 120 m: it swims calmly under the craft  3 % hard turns, 5,4 swings a minute
+PASS craft at 8 m/s in a circle of 120 m: feints pass within sight  40/40
+PASS craft at 8 m/s in a circle of 120 m: as many cues as at rest  7,2 (at rest 8,1)
+PASS craft at 8 m/s in a circle of 120 m: no kill before 180 s, limits hold
+     craft at 8 m/s turning back every 25 s: near 90 %, passes 2,0 a run, 18,5 s beside it, feints seen 40/40 (worst 48 m), cues 7,4, under the craft: hard turns 3 % of the time, 8,7 swings a minute, kills 40/40, misses 2
+PASS craft at 8 m/s turning back every 25 s: it stays with the craft  90 %
+PASS craft at 8 m/s turning back every 25 s: the close pass happens and lasts  40/40 runs, 18,5 s (at rest 14,7 s)
+PASS craft at 8 m/s turning back every 25 s: it swims calmly under the craft  3 % hard turns, 8,7 swings a minute
+PASS craft at 8 m/s turning back every 25 s: feints pass within sight  40/40
+PASS craft at 8 m/s turning back every 25 s: as many cues as at rest  7,4 (at rest 8,1)
+PASS craft at 8 m/s turning back every 25 s: no kill before 180 s, limits hold
+     craft at 8 m/s stop and go every 20 s: near 91 %, passes 1,9 a run, 14,0 s beside it, feints seen 40/40 (worst 40 m), cues 7,5, under the craft: hard turns 4 % of the time, 7,3 swings a minute, kills 40/40, misses 0
+PASS craft at 8 m/s stop and go every 20 s: it stays with the craft  91 %
+PASS craft at 8 m/s stop and go every 20 s: the close pass happens and lasts  40/40 runs, 14,0 s (at rest 14,7 s)
+PASS craft at 8 m/s stop and go every 20 s: it swims calmly under the craft  4 % hard turns, 7,3 swings a minute
+PASS craft at 8 m/s stop and go every 20 s: feints pass within sight  40/40
+PASS craft at 8 m/s stop and go every 20 s: as many cues as at rest  7,5 (at rest 8,1)
+PASS craft at 8 m/s stop and go every 20 s: no kill before 180 s, limits hold
+     craft at 8 m/s always sideways to the fish: near 92 %, passes 1,6 a run, 7,2 s beside it, feints seen 40/40 (worst 41 m), cues 8,2, under the craft: hard turns 3 % of the time, 6,5 swings a minute, kills 40/40, misses 0
+PASS craft at 8 m/s always sideways to the fish: it stays with the craft  92 %
+PASS craft at 8 m/s always sideways to the fish: the close pass happens and lasts  37/40 runs, 7,2 s (at rest 14,7 s)
+PASS craft at 8 m/s always sideways to the fish: it swims calmly under the craft  3 % hard turns, 6,5 swings a minute
+PASS craft at 8 m/s always sideways to the fish: feints pass within sight  40/40
+PASS craft at 8 m/s always sideways to the fish: as many cues as at rest  8,2 (at rest 8,1)
+PASS craft at 8 m/s always sideways to the fish: no kill before 180 s, limits hold
+     craft at 8 m/s random new heading every 5-15 s: near 93 %, passes 1,9 a run, 14,6 s beside it, feints seen 40/40 (worst 54 m), cues 6,8, under the craft: hard turns 4 % of the time, 9,4 swings a minute, kills 40/40, misses 0
+PASS craft at 8 m/s random new heading every 5-15 s: it stays with the craft  93 %
+PASS craft at 8 m/s random new heading every 5-15 s: the close pass happens and lasts  40/40 runs, 14,6 s (at rest 14,7 s)
+PASS craft at 8 m/s random new heading every 5-15 s: it swims calmly under the craft  4 % hard turns, 9,4 swings a minute
+PASS craft at 8 m/s random new heading every 5-15 s: feints pass within sight  40/40
+PASS craft at 8 m/s random new heading every 5-15 s: as many cues as at rest  6,8 (at rest 8,1)
+PASS craft at 8 m/s random new heading every 5-15 s: no kill before 180 s, limits hold
+     craft at 16 m/s straight: near 96 %, passes 2,2 a run, 16,7 s beside it, feints seen 48/48 (worst 44 m), cues 6,8, under the craft: hard turns 4 % of the time, 8,8 swings a minute, kills 40/40, misses 0
+PASS craft at 16 m/s straight: it stays with the craft  96 %
+PASS craft at 16 m/s straight: the close pass happens and lasts  40/40 runs, 16,7 s (at rest 14,7 s)
+PASS craft at 16 m/s straight: it swims calmly under the craft  4 % hard turns, 8,8 swings a minute
+PASS craft at 16 m/s straight: feints pass within sight  48/48
+PASS craft at 16 m/s straight: as many cues as at rest  6,8 (at rest 8,1)
+PASS craft at 16 m/s straight: no kill before 180 s, limits hold
+     craft at 16 m/s zigzag, 50 deg either side every 12 s: near 95 %, passes 2,2 a run, 20,4 s beside it, feints seen 41/41 (worst 61 m), cues 7,2, under the craft: hard turns 3 % of the time, 11,4 swings a minute, kills 40/40, misses 9
+PASS craft at 16 m/s zigzag, 50 deg either side every 12 s: it stays with the craft  95 %
+PASS craft at 16 m/s zigzag, 50 deg either side every 12 s: the close pass happens and lasts  40/40 runs, 20,4 s (at rest 14,7 s)
+PASS craft at 16 m/s zigzag, 50 deg either side every 12 s: it swims calmly under the craft  3 % hard turns, 11,4 swings a minute
+PASS craft at 16 m/s zigzag, 50 deg either side every 12 s: feints pass within sight  41/41
+PASS craft at 16 m/s zigzag, 50 deg either side every 12 s: as many cues as at rest  7,2 (at rest 8,1)
+PASS craft at 16 m/s zigzag, 50 deg either side every 12 s: no kill before 180 s, limits hold
+     craft at 16 m/s in a circle of 120 m: near 96 %, passes 2,0 a run, 16,0 s beside it, feints seen 40/40 (worst 52 m), cues 7,6, under the craft: hard turns 1 % of the time, 3,8 swings a minute, kills 40/40, misses 0
+PASS craft at 16 m/s in a circle of 120 m: it stays with the craft  96 %
+PASS craft at 16 m/s in a circle of 120 m: the close pass happens and lasts  40/40 runs, 16,0 s (at rest 14,7 s)
+PASS craft at 16 m/s in a circle of 120 m: it swims calmly under the craft  1 % hard turns, 3,8 swings a minute
+PASS craft at 16 m/s in a circle of 120 m: feints pass within sight  40/40
+PASS craft at 16 m/s in a circle of 120 m: as many cues as at rest  7,6 (at rest 8,1)
+PASS craft at 16 m/s in a circle of 120 m: no kill before 180 s, limits hold
+     craft at 16 m/s turning back every 25 s: near 96 %, passes 2,1 a run, 18,4 s beside it, feints seen 39/40 (worst 75 m), cues 7,0, under the craft: hard turns 4 % of the time, 12,6 swings a minute, kills 40/40, misses 3
+PASS craft at 16 m/s turning back every 25 s: it stays with the craft  96 %
+PASS craft at 16 m/s turning back every 25 s: the close pass happens and lasts  40/40 runs, 18,4 s (at rest 14,7 s)
+PASS craft at 16 m/s turning back every 25 s: it swims calmly under the craft  4 % hard turns, 12,6 swings a minute
+PASS craft at 16 m/s turning back every 25 s: feints pass within sight  39/40
+PASS craft at 16 m/s turning back every 25 s: as many cues as at rest  7,0 (at rest 8,1)
+PASS craft at 16 m/s turning back every 25 s: no kill before 180 s, limits hold
+     craft at 16 m/s stop and go every 20 s: near 96 %, passes 2,0 a run, 14,3 s beside it, feints seen 40/40 (worst 51 m), cues 7,4, under the craft: hard turns 3 % of the time, 9,6 swings a minute, kills 40/40, misses 1
+PASS craft at 16 m/s stop and go every 20 s: it stays with the craft  96 %
+PASS craft at 16 m/s stop and go every 20 s: the close pass happens and lasts  40/40 runs, 14,3 s (at rest 14,7 s)
+PASS craft at 16 m/s stop and go every 20 s: it swims calmly under the craft  3 % hard turns, 9,6 swings a minute
+PASS craft at 16 m/s stop and go every 20 s: feints pass within sight  40/40
+PASS craft at 16 m/s stop and go every 20 s: as many cues as at rest  7,4 (at rest 8,1)
+PASS craft at 16 m/s stop and go every 20 s: no kill before 180 s, limits hold
+     craft at 16 m/s always sideways to the fish: near 92 %, passes 2,0 a run, 16,4 s beside it, feints seen 40/40 (worst 46 m), cues 6,8, under the craft: hard turns 2 % of the time, 10,3 swings a minute, kills 40/40, misses 0
+PASS craft at 16 m/s always sideways to the fish: it stays with the craft  92 %
+PASS craft at 16 m/s always sideways to the fish: the close pass happens and lasts  40/40 runs, 16,4 s (at rest 14,7 s)
+PASS craft at 16 m/s always sideways to the fish: it swims calmly under the craft  2 % hard turns, 10,3 swings a minute
+PASS craft at 16 m/s always sideways to the fish: feints pass within sight  40/40
+PASS craft at 16 m/s always sideways to the fish: as many cues as at rest  6,8 (at rest 8,1)
+PASS craft at 16 m/s always sideways to the fish: no kill before 180 s, limits hold
+     craft at 16 m/s random new heading every 5-15 s: near 95 %, passes 2,1 a run, 19,8 s beside it, feints seen 40/40 (worst 59 m), cues 7,0, under the craft: hard turns 2 % of the time, 12,8 swings a minute, kills 40/40, misses 3
+PASS craft at 16 m/s random new heading every 5-15 s: it stays with the craft  95 %
+PASS craft at 16 m/s random new heading every 5-15 s: the close pass happens and lasts  40/40 runs, 19,8 s (at rest 14,7 s)
+PASS craft at 16 m/s random new heading every 5-15 s: it swims calmly under the craft  2 % hard turns, 12,8 swings a minute
+PASS craft at 16 m/s random new heading every 5-15 s: feints pass within sight  40/40
+PASS craft at 16 m/s random new heading every 5-15 s: as many cues as at rest  7,0 (at rest 8,1)
+PASS craft at 16 m/s random new heading every 5-15 s: no kill before 180 s, limits hold
+PASS jaws shut while it circles, searches and dives, and whenever it is far off
+PASS jaws wide open at the hit  least 1,00
+PASS silent dark craft far away: never noticed
+PASS craft that goes silent early: no kill before the gate
+PASS it can give up
+PASS it only moves where it points  max 0,00 deg off the heading
+PASS turn rate limit 110 deg/s  max 110,0 deg/s
+PASS in sight it never turns faster than 30 deg/s  max 30,0 deg/s
+PASS sideways pull of a turn limited: wide arcs at speed  max 32,0 m/s2
+PASS speed limit  max 48,0 m/s
+PASS it is fast in the rise  200/200 above 42 m/s
+PASS stays between floor and ceiling (floor 250 m under the craft)  z -614 .. -327
+PASS ceiling: it stays deep while circling  highest -322 m (ceiling 200, a rise may overshoot a little)
+PASS cue gaps are irregular  n 76 mean 46,7 sd 31,2
+PASS two seeds differ
+PASS nothing when the monster is far away and the craft is loud
+PASS dark: no daylight shadows, lure can show
+PASS daylight, monster above: shadows, no lure
+PASS lights on, close: cone glimpse and flicker
+PASS monster below: bubbles, not above: none
+PASS near the floor: sediment
+PASS the scream is never a random cue
+PASS exposure budget lowers the rate  33 with, 54 without
+ALL PASS
